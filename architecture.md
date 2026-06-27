@@ -130,7 +130,7 @@ machinery this project needs. We reuse it rather than rebuild it.
 | Baselining | 168-bucket seasonal model, two-timescale EWMA | Per-agent / per-task-class envelopes |
 | Detection | z-score/MAD scorer, event rules, novelty, composite, kill-chain | Feeds the policy author + the gate's simulation |
 | MITRE mapping | context-aware ATT&CK + kill-chain spans | Used to explain *why* a rule was drafted |
-| Telemetry | OTLP export (spans/logs/metrics), health `/metrics` | Enforcement-decision audit stream |
+| Telemetry | OTLP export (spans + logs done; metric instruments still *planned* upstream), health `/metrics` | Enforcement-decision audit stream + net-new OTLP metrics |
 | Persistence | SQLite baseline store | Policy store + version history |
 
 **Key gap the monitor does not cover, and this project must add:** the monitor *watches*
@@ -221,12 +221,18 @@ its own `cgroup.procs` and migrate out of `ai-agents.slice` to shed attribution.
   "deploy to staging").
 - **Why:** "suspicious" is meaningful only relative to intent. `curl | sh` during
   "set up the dev environment" is plausible; the same call during "summarize this log file"
-  is not.
+  is not — but this relativity is used for **detection and observability only**, not blocking.
+- **Role (settled):** intent is **observability/logging only**. It annotates events, feeds
+  slow-plane detection (§5.3), and may *shape* the rule rationale that later becomes the
+  denial-feedback `reason` (the `reason` is sourced from the rule's rationale, not from intent
+  directly — §5.10). It is **never an input to an enforcement decision** — enforcement is
+  action + policy only (§5.8). This sidesteps the trust problem below entirely on the hot path.
 - **How:** a thin SDK/sidecar/shim the agent runtime reports to (HTTP/UDS), tagging each
   intent with a correlation id and the cgroup/PID range it will execute under. Agents that
-  cannot be instrumented degrade to **action-only** mode (no intent signal; rely purely on
-  behavioral baseline).
-- **Interface out:** `(correlation_id, cgroup, task_class, declared_actions[], ts)`.
+  cannot be instrumented degrade to **action-only** mode (no intent signal; enforcement is
+  unaffected — it never used intent anyway).
+- **Interface out:** `(correlation_id, cgroup, task_class, declared_actions[], ts)` — consumed
+  by logging and detection, not by the enforcer.
 - **Trust caveat (critical):** intent is **self-reported by the very agent being policed**,
   so it is an *untrusted hint*, never a trust grant. A prompt-injected agent could declare
   benign intent to "cover" malicious actions. Therefore intent may only **explain or
@@ -235,15 +241,23 @@ its own `cgroup.procs` and migrate out of `ai-agents.slice` to shed attribution.
   match observed actions are themselves a divergence signal, not an excuse. The intent
   channel is also authenticated/scoped so one agent cannot spoof another's correlation id.
 
-### 5.3 Intent-vs-action correlator
-- **What:** joins the action stream (§5.1) with the intent stream (§5.2) on cgroup/PID +
-  time window, and produces a *divergence* signal: actions with no plausible intent,
-  intents with anomalous execution, scope creep (touching paths/hosts outside the task).
-- **How:** deterministic correlation + the monitor's existing scorer for the statistical
-  part; the LLM is used for semantic judgement ("does connecting to `8.8.8.8:53` fit
-  'summarize a file'?") in the *slow* plane only.
-- **Interface out:** scored divergence findings with evidence (events + MITRE tags + intent
-  context).
+### 5.3 Intent-vs-action correlator (detection & observability only)
+- **Settled scope:** enforcement is **action-only**. This correlator runs **entirely in the
+  slow plane** and **never gates a block**. It exists to *detect, alert, annotate, and
+  propose* — not to deny. (We rejected intent-gated blocking: intent is self-reported by the
+  policed agent, and "does this action fit this NL task?" is a fuzzy judgment that has no
+  place in a deterministic hot path.)
+- **What:** joins the action stream (§5.1) with the intent stream (§5.2) on cgroup/`(pid,
+  start_ns)` + time window, producing *divergence* observations: actions with no plausible
+  intent, anomalous execution of a stated task, scope creep (paths/hosts outside the task).
+- **Where the output goes:** (1) **logging/telemetry** — divergence attached as metadata on
+  action records (§5.9); (2) **rule proposals** — evidence for a *new deterministic action
+  rule* a human/gate can approve; (3) **alerts**. It does **not** feed the enforcer.
+- **How:** deterministic correlation + the monitor's scorer for the statistical part; an LLM
+  is **optional** for semantic judgement and only in the slow plane. With no LLM this degrades
+  to statistical + rule-based divergence.
+- **Interface out:** divergence observations (evidence + MITRE tags + intent context) → logs,
+  alerts, and candidate rules. **Never → enforcement maps.**
 
 ### 5.4 Behavioral baseline (learn normal)
 - **What:** per-agent and per-task-class envelopes of normal behavior.
@@ -257,6 +271,10 @@ its own `cgroup.procs` and migrate out of `ai-agents.slice` to shed attribution.
   host-level context. The set-membership tracks (novelty: first-seen `(binary, path, ip,
   port)` tuples) and the deny rules carry most of the weight here; rate baselines are
   secondary.
+- **Enforcement caveat (settled):** `task_class` scopes **learning and authoring only**. It is
+  a self-reported, untrusted label, so it is **never a kernel match field** (§8); a rule
+  learned in a task-class context is compiled down to an **`agent_scope`** (cgroup/label) rule
+  at enforcement time. This prevents intent from sneaking back into the hot path.
 - **Interface out:** "is this action/rate within the learned envelope?" queries used by the
   correlator and the policy author.
 
@@ -314,14 +332,61 @@ its own `cgroup.procs` and migrate out of `ai-agents.slice` to shed attribution.
      and escalation policy are part of the rule (§8).
 - **Hard rule:** these programs never call into userspace synchronously for a verdict and
   never depend on the LLM. Verdicts come only from pre-loaded maps.
+- **Action-only (settled):** a verdict is a function of **observed action + approved policy**
+  alone. Declared intent is **never** an input to a block decision — it is observability
+  metadata only (§5.2, §5.3).
 
-### 5.9 Audit & telemetry
-- **What:** every enforcement decision (allow/deny/kill), every policy promotion, and every
-  gate approval is logged to a tamper-evident audit stream and exported via OTLP (reuse the
-  monitor's `otelexport`).
-- **Why:** the LLM's proposals, the human's approvals, and the kernel's actions must all be
-  reconstructable after the fact for incident review and for *training the next round* of
-  policy.
+### 5.9 Audit, telemetry & observability
+The data path mirrors `ebpf-host-monitor`: **ringbuf in, push out, state-only on disk.**
+
+**Path:**
+1. **Kernel → userspace via BPF ringbuf.** eBPF programs write structured records — agent
+   actions (observation) *and* enforcement verdicts (allow/deny/freeze/kill) — into a ringbuf
+   (variable-length, backpressure via drops, single consumer).
+2. **Userspace enriches & annotates.** PID/UID/cgroup → binary/user/container, `agent_id` tag,
+   argv, and — for logging only — the joined intent/`correlation_id` and any §5.3 divergence.
+3. **Local persistence = state only, not a firehose.** **SQLite** holds baseline/novelty state
+   and **policy version history** — *not* a full event log. The host stays effectively
+   stateless for events; we do not dump every action into a local DB (expensive, poisonable,
+   single point of loss).
+4. **Export = push, via OpenTelemetry (OTLP gRPC) to a collector:**
+   - **Logs** — structured security LogRecords; the **primary audit/SIEM path**. Every
+     high-value action, **every enforcement decision**, and **every policy promotion/approval**
+     goes here. Enforcement decisions export at **100% sampling** (never sampled away).
+   - **Traces** — anomaly spans, kill-chain spans, and **enforcement-decision spans**.
+   - **Metrics** — deny rate, escalations, agent task-failure rate, etc. (net-new instruments;
+     the monitor's OTLP metric instruments are still *planned*, so don't assume reuse here).
+5. **Prometheus `/metrics` = pull, health only.** Agent up, ringbuf drops, tracepoints/hooks
+   attached — *not* detection or enforcement output.
+
+> **Audit-durability caveat:** verdict records share the ringbuf, so under extreme
+> backpressure `bpf_ringbuf_reserve` can drop one *before* the OTLP/audit-log paths see it —
+> the deny still applies (`-EPERM`), but its audit record is lost. To keep the "100% / never
+> sampled away" guarantee meaningful, enforcement verdicts use a **reserved/separate ringbuf
+> channel** (or per-CPU reservation) sized so they are not dropped under observation load;
+> absent that, verdict audit is **best-effort** under extreme backpressure.
+
+**Where "everything" is stored:** the **backend** (your choice — SIEM, Loki, Tempo/Jaeger,
+ClickHouse), which the collector fans out to. Durable full-event retention is a backend
+concern, not a host concern.
+
+**Tamper-evident local audit log (net-new):** the monitor is push-only, so this has no
+upstream counterpart. Enforcement decisions and policy promotions also append to a **local,
+integrity-protected, append-only log** so the audit trail survives a collector or network
+outage; it flushes to the collector on recovery.
+
+**Why push for detection, pull for health:** a security agent should push enriched results
+outbound — scrape loses per-event context, needs inbound reachability, and tempts you to
+reimplement detection in PromQL. (Inherited rationale from the monitor.)
+
+> **Retention default (assumption, overridable):** push-only via OTLP + local append-only
+> audit log; SQLite for state only; full-event retention lives in the backend. An *optional*
+> local full-event sink (for air-gapped hosts with no collector) is off by default — more
+> storage and a larger poisoning surface.
+
+- **Why it matters:** the LLM's proposals, the human's approvals, and the kernel's actions
+  must all be reconstructable after the fact for incident review and for *training the next
+  round* of policy.
 
 ### 5.10 Denial feedback channel (a signal the model can understand)
 - **Problem:** a denied syscall returns a bare `-EPERM`. To the model that is an opaque
@@ -364,8 +429,8 @@ its own `cgroup.procs` and migrate out of `ai-agents.slice` to shed attribution.
 ```mermaid
 flowchart LR
     A["Agent enrolled + tagged\n(cgroup anchor / exec fingerprint)\nruns task, declares intent"] --> B["Kernel observes actions\n(eBPF telemetry, scoped by agent_id)"]
-    B --> C["Correlate intent vs action\n+ score vs baseline"]
-    C --> D["LLM drafts/updates policy\n(allow normal, deny divergence)"]
+    B --> C["Slow plane: score actions vs baseline,\nannotate w/ intent (detection only)"]
+    C --> D["Author policy proposal\n(deterministic action rules)"]
     D --> E{"Promotion gate"}
     E -->|"shadow / simulate"| E
     E -->|"approved + signed"| F["Loader compiles to BPF maps"]
@@ -428,7 +493,8 @@ policy_bundle:
       rationale: >
         Task class "build" only ever connected to the internal package registry
         (10.0.0.0/8:443) across 14 days of baseline. Outbound to public IPs is
-        divergence from intent.
+        divergence from the learned baseline. (Authored per task-class; enforced
+        as an agent_scope rule — see §5.4.)
       match:
         action: connect
         dest_ip_not_in: ["10.0.0.0/8"]
@@ -455,8 +521,10 @@ policy_bundle:
 
 Design constraints on the schema:
 - **Closed vocabulary of match fields** — only fields the kernel can evaluate from map data
-  (action type, dest ip/port, path prefixes, uid, binary identity, cgroup). No regex/no
-  free-form predicates in the hot path.
+  (action type, dest ip/port, path prefixes, uid, binary identity, cgroup). **`task_class`/
+  intent are deliberately excluded** — they are self-reported and slow-plane only; a rule
+  learned per task-class compiles down to an `agent_scope` rule and is never matched on intent
+  at runtime. No regex/no free-form predicates in the hot path.
 - **Every rule carries provenance and rationale** — so the gate (and humans) can audit *why*
   the LLM proposed it, and so a bad proposal is obvious.
 - **Compilable to maps** — path sets → LPM/hash maps, IP ranges → LPM trie, ports → hash,
@@ -548,7 +616,10 @@ This is the part that makes "let an AI block things on my server" defensible.
 7. **Anti-poisoning.** Same concern as the monitor: an attacker who slowly "teaches" the
    baseline that malicious behavior is normal. Mitigations: anomalous windows excluded from
    baseline ingest, ceilings, novelty tracking, and **the human/gate sees the rationale and
-   provenance before any allow-rule widens the envelope.**
+   provenance before any allow-rule widens the envelope.** Note `task_class` is a
+   self-reported, untrusted **learning** key: a compromised agent could mislabel its task to
+   steer which rules get authored. This only affects *authoring* (never enforcement, §5.4),
+   and the gate is the backstop — but treat mislabeling as a poisoning vector.
 
 ---
 
@@ -664,7 +735,8 @@ correlation, learning, authoring, and shadow-mode simulation are proven.
   model involved.
 - **Intent** — what the agent declared it intends to do (task/plan/tool calls).
 - **Action** — what the agent actually did (observed syscalls).
-- **Divergence** — action that doesn't fit declared intent or the learned envelope.
+- **Divergence** — action that doesn't fit declared intent or the learned envelope; a
+  **detection signal only**, never an enforcement input.
 - **Policy bundle** — signed, versioned set of deterministic rules (§8).
 - **Promotion gate** — the approval boundary; nothing is enforced without passing it.
 - **Shadow mode** — a rule is evaluated and logged ("would have blocked") but does not

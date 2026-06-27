@@ -1,8 +1,8 @@
 # State
 
 ## Active Task
-Refine `architecture.md` per owner Q&A: resolve D1 (enrollment/attribution), elevate argv
-capture, add denial-feedback channel.
+Refine `architecture.md` per owner Q&A: action-only enforcement (intent demoted to
+observability/logging), concrete observability data path.
 
 ## To-Do
 1. Owner resolves remaining open decisions D2–D6 in `architecture.md` §12.
@@ -46,6 +46,23 @@ capture, add denial-feedback channel.
   name-match FP risk); `cgroup.freeze` clarified as userspace cgroup-v2 action;
   `bpf_send_signal` targets current task only; §5.10 `correlation_id` reconstructed in
   userspace via cgroup/(pid,start_ns) join; cgroup-delegation lockdown note for Mode A.
+- 2026-06-27 — Settled: **enforcement is action-only**; no intent-vs-action comparison in the
+  hot path. Intent demoted to observability/logging + slow-plane detection + denial-feedback
+  reason. Reframed §5.2 (intent role), §5.3 (correlator = detection/observability only, never
+  feeds enforcer), §5.8 (action-only verdict), §6 diagram, glossary. Expanded §5.9 into the
+  concrete observability data path: ringbuf → enrich → SQLite (state only, not a firehose) →
+  OTLP push (logs/traces/metrics; enforcement decisions at 100%); Prometheus pull = health
+  only; local append-only tamper-evident audit log; backend owns full-event retention.
+  Retention default = push-only + local audit log (optional local full-event sink off by
+  default).
+- 2026-06-27 — Sub-agent review (code-reviewer) of action-only/observability edits: no
+  Critical. Applied fixes: `task_class` is learning/authoring-only and never a kernel match
+  field (compiles to `agent_scope`) — §5.4 + §8; ringbuf audit-durability caveat (reserved
+  verdict channel; else best-effort under backpressure) — §5.9; corrected §4 overclaim
+  (monitor OTLP metrics are planned, not done) + flagged net-new metrics/audit-log;
+  schema example rationale reworded ("divergence from the learned baseline", agent_scope
+  note); §5.2 `reason` sourced from rule rationale not intent; §10.7 task_class as untrusted
+  learning/poisoning vector.
 
 ## Decisions
 - Build on `ebpf-host-monitor` rather than rebuild; reuse it as the observation layer.
@@ -55,3 +72,13 @@ capture, add denial-feedback channel.
   kernel maps, and only for signed bundles that passed the promotion gate.
 - New deny rules are shadow-by-default; enforcement (P5) is sequenced last, after
   observe/correlate/learn/author/shadow are proven.
+- Enforcement is action-only; intent is never a hot-path input (trust + determinism). Intent
+  serves observability, slow-plane detection, and the denial-feedback `reason` only.
+- Observability is push-first (OTLP) for detection/enforcement/audit, pull (Prometheus) for
+  health only; local disk is state-only (SQLite) plus a tamper-evident audit log; full-event
+  retention is delegated to the backend.
+
+## Open / Undecided
+- Policy authoring source (handwritten vs heuristic-generated vs LLM-assisted) NOT yet
+  settled — leaning pluggable "policy source" with the LLM optional. Doc still frames §5.5 as
+  "LLM policy author"; diagram kept neutral. Revisit.
