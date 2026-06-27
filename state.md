@@ -1,11 +1,12 @@
 # State
 
 ## Active Task
-Refine `architecture.md` per owner Q&A: action-only enforcement (intent demoted to
-observability/logging), concrete observability data path.
+Reshaped `architecture.md` to the owner's v1 vision: a **policy-strict** enforcement agent
+(track AI procs → check vs defined policies → block → comprehensible denial feedback). Learning
+baseline, LLM authoring, and intent correlation moved to §14 Future directions.
 
 ## To-Do
-1. Owner resolves remaining open decisions D2–D6 in `architecture.md` §12.
+1. Owner resolves remaining open decisions D2, D3, D5, D6 in `architecture.md` §12.
 2. After decisions land, revise `architecture.md` to prune unchosen options.
 3. (Later) Transition to an implementation plan once design is approved.
 
@@ -63,6 +64,24 @@ observability/logging), concrete observability data path.
   schema example rationale reworded ("divergence from the learned baseline", agent_scope
   note); §5.2 `reason` sourced from rule rationale not intent; §10.7 task_class as untrusted
   learning/poisoning vector.
+- 2026-06-27 — **Major reshape** of `architecture.md` to the owner's v1 vision: a policy-strict
+  enforcement agent. New thesis ("define policy once; kernel enforces on AI procs; tell the
+  agent comprehensibly to stop"). Core v1 components: enrollment/attribution, observation,
+  policy model (curated allow/deny), trusted loader, enforcement, denial feedback (the
+  differentiator), audit/observability, human authoring + shadow→enforce lifecycle. Demoted to
+  §14 Future directions: behavioral baseline/learning, LLM policy authoring, intent capture +
+  correlation, automated promotion gate, anomaly-detection alerting. D1 resolved, D4 deferred
+  (LLM is future); D2/D3/D5/D6 remain. Decision rationale: enforcement (block) needs crisp
+  deterministic reasons; agents are novelty machines so a learned baseline is a poor + poisonable
+  authorization boundary; curated policy matches industry practice (Falco/Tetragon/AppArmor).
+- 2026-06-27 — Sub-agent review of the reshape (code-reviewer + docs). Reviewer: no Critical,
+  zero dangling refs. Applied fixes: added system-path destructive-op protection to curated core
+  + §8 example (`rm -rf` motivation now actually covered; arbitrary user-file deletion explicitly
+  NOT deny-listed); tightened threat-row 1 (novel bad action is allowed under deny-list default);
+  removed stale "detection state" from §5.7; freeze-only-for-dedicated-cgroup caveat in goal 4 +
+  P3; §9 note that Mode-B egress rides LSM `socket_connect` and D2 couples with Mode A/B. Docs
+  agent CONFIRMED new LSM hook claims (socket_connect, path/inode unlink+rename, file_open;
+  write via file_permission MAY_WRITE; all need CONFIG_BPF_LSM + lsm=bpf, kernel >= 5.7).
 
 ## Decisions
 - Build on `ebpf-host-monitor` rather than rebuild; reuse it as the observation layer.
@@ -79,6 +98,7 @@ observability/logging), concrete observability data path.
   retention is delegated to the backend.
 
 ## Open / Undecided
-- Policy authoring source (handwritten vs heuristic-generated vs LLM-assisted) NOT yet
-  settled — leaning pluggable "policy source" with the LLM optional. Doc still frames §5.5 as
-  "LLM policy author"; diagram kept neutral. Revisit.
+- Policy authoring source SETTLED for v1: human-authored curated allow/deny policy (no LLM, no
+  learning baseline). AI authoring + learning-assisted allow-list generation are future (§14).
+- Default posture: `default_action: allow` (deny-list) recommended for v1; `default_action: deny`
+  (allow-list) reserved for high-security tier + future learning assist.
