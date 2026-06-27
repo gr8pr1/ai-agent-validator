@@ -567,7 +567,7 @@ What makes "block AI actions on my server" defensible:
 | **D1** | Enrollment | **Hybrid** — Mode A (controlled-spawn cgroup) + Mode B (exec-time fingerprint). §5.1. |
 | **D2** | Kernel enforcement mechanism | **LSM + cgroup-BPF egress + tracepoints.** §9. |
 | **D3** | Enforcement actions | **Full set designed; v1 P3 ships deny-only.** Escalation ladder (freeze/kill/quarantine) and terminal `decision: kill` rules are **planned** for a follow-on phase. Mode B skips freeze (kill-only when escalation lands). §5.5. |
-| **D4** | LLM location | **Deferred** — irrelevant until AI policy authoring (§14). |
+| **D4** | LLM location | **Deferred** — irrelevant until/unless LLM-assisted allow-list generation is built (§14, distant-future, lowest priority). |
 | **D5** | Fail direction | **Operator config** — `fail_direction: open\|closed` per bundle/`agent_scope`. §8, §10. |
 | **D6** | v1 deployment scope | **Single-host for open-source v1**; loader/enforcer contract is **fleet-ready** (pluggable bundle source; no host-management platform required in v1). §5.4, §13. |
 
@@ -593,27 +593,36 @@ phase is required to ship enforcement.**
 
 ---
 
-## 14. Future directions (the slow control plane)
+## 14. Future directions (post-v1, by priority)
 
-Everything here is **post-v1** and optional — a clean upgrade path, and the natural commercial
-layer (open core = mechanism + generic packs; paid = maintained packs + the assists below).
+Nothing in v1 depends on anything here. Listed highest- to lowest-priority; the AI/learning idea
+is deliberately **last** — a distant-future "nice to have," not a near-term goal.
 
-- **Learning-assisted allow-list generation.** For customers who want `default_action: deny`
-  (strong containment), observe legit behavior and *propose* an allow-list for human approval —
-  reusing the monitor's baseline. Solves the "allow-list is tedious to hand-write" problem.
-  Output is a *proposal*; it never auto-enforces.
-- **AI policy authoring.** An LLM drafts candidate rules + rationale from observed behavior and
-  MITRE context; humans/gate approve. Revives "AI writes the rules; the kernel runs them" —
-  with the LLM strictly upstream of the loader. (This is where **D4**, where the LLM runs,
-  becomes relevant.)
-- **Intent capture & correlation (observability-only).** Ingest the agent's declared task/plan
-  and flag intent-vs-action divergence as a *detection* signal that proposes rules — **never**
-  an enforcement input (self-reported intent is untrusted, and fuzzy NL matching has no place on
-  a deterministic hot path).
+**Near-term, deterministic (no model):**
 - **Automated promotion gate.** Staged rollout (shadow → canary → enforce) with objective gates
   (no false-positive blocks of known-good over N hours, no rise in agent task-failure rate).
-- **Anomaly detection as a secondary alert stream** — the monitor's scorer, surfacing unusual
-  agent behavior to operators without ever blocking on it.
+- **Anomaly-detection alert stream (detection-only).** Reuse the monitor's scorer to surface
+  unusual agent behavior to operators — an alert/telemetry signal, **never** an enforcement input.
+- **Intent capture & correlation (detection-only).** Optionally ingest the agent's declared
+  task/plan and flag intent-vs-action divergence as an alert that *proposes* rules — **never** an
+  enforcement input (self-reported intent is untrusted; fuzzy NL matching has no place on a
+  deterministic hot path).
+
+**Planned — distant future, lowest priority** (the only place AI would re-enter the control plane):
+- **Learning/LLM-assisted allow-list generation.** *Lowest-priority; revisit only once the
+  deterministic product is mature.* Relevant only if the strong-containment posture
+  (`default_action: deny`) is ever offered: observe legitimate behavior and **propose** an
+  allow-list (optionally an LLM drafting candidate rules + rationale from MITRE context) for a
+  human/gate to approve — addressing the "allow-list is tedious to hand-write" adoption barrier.
+  Hard constraints: output is always a *proposal*; the model is strictly **upstream of the
+  loader** and never writes maps or touches the enforcement path. **D4** (where the LLM runs) only
+  becomes relevant here.
+  - *Explicitly not planned:* using an LLM to author the catastrophic **deny**-list — curated,
+    human-owned, community-maintained packs are more trustworthy for the stable,
+    security-critical core.
+
+**Commercial framing (later):** open core = mechanism + generic curated packs; paid = maintained
+packs, management/gate UI, and — eventually — the allow-list-generation assist above.
 
 ---
 

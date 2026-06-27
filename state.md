@@ -1,8 +1,8 @@
 # State
 
 ## Active Task
-All architectural decisions D1–D3, D5–D6 resolved in `architecture.md` §12. Next: transition to
-an implementation plan once design is approved.
+§14 Future directions reprioritized per owner: AI/learning ranked last. Next: transition to an
+implementation plan once design is approved.
 
 ## To-Do
 1. (Later) Transition to an implementation plan once design is approved.
@@ -78,6 +78,13 @@ an implementation plan once design is approved.
   **D5:** operator-configurable `fail_direction` per scope. **D6:** single-host v1, fleet-ready
   loader contract. Pruned §9 unchosen mechanisms; updated §5.4/§5.5/§8/§10/§11/§13 and status
   footer.
+- 2026-06-27 — Reprioritized §14 (Future directions) per owner: reordered by priority with the
+  AI/learning idea **last**. Kept LLM/learning-assisted **allow-list generation** as the only
+  AI control-plane item, marked *planned, distant-future, lowest-priority* (revisit only once the
+  deterministic product is mature; output always a human-approved proposal, never on the
+  enforcement path). Folded the former standalone "AI policy authoring" bullet into it and added
+  an *explicitly-not-planned* note for LLM-authored deny-lists (curated human packs preferred).
+  Demoted intent correlation + anomaly alerting to deterministic/detection-only near-term items.
 
 ## Decisions
 - Build on `ebpf-host-monitor` rather than rebuild; reuse it as the observation layer.
