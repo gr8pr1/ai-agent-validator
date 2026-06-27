@@ -1,24 +1,14 @@
 # State
 
 ## Active Task
-Reshaped `architecture.md` to the owner's v1 vision: a **policy-strict** enforcement agent
-(track AI procs → check vs defined policies → block → comprehensible denial feedback). Learning
-baseline, LLM authoring, and intent correlation moved to §14 Future directions.
+All architectural decisions D1–D3, D5–D6 resolved in `architecture.md` §12. Next: transition to
+an implementation plan once design is approved.
 
 ## To-Do
-1. Owner resolves remaining open decisions D2, D3, D5, D6 in `architecture.md` §12.
-2. After decisions land, revise `architecture.md` to prune unchosen options.
-3. (Later) Transition to an implementation plan once design is approved.
+1. (Later) Transition to an implementation plan once design is approved.
+2. (Later) Begin P0 — enroll & observe on `ebpf-host-monitor` foundation.
 
 ## Issues / Blockers
-- D1 RESOLVED → hybrid enrollment (Mode A controlled-spawn cgroup + Mode B eBPF exec-time
-  fingerprint; anchor + cgroup/lineage propagation). See §5.1.1.
-- Five open architectural decisions remain, awaiting owner input:
-  - D2 kernel enforcement mechanism (LSM + cgroup-egress + tracepoints mix recommended)
-  - D3 enforcement actions (full set assumed, gated by rollout)
-  - D4 LLM location (local self-hosted assumed)
-  - D5 fail direction (per-scope configurable, fail-open prod default assumed)
-  - D6 v1 scope (full design documented; build can start single-host)
 - No git remote configured yet (push deferred until remote exists).
 
 ## Completed
@@ -82,23 +72,34 @@ baseline, LLM authoring, and intent correlation moved to §14 Future directions.
   P3; §9 note that Mode-B egress rides LSM `socket_connect` and D2 couples with Mode A/B. Docs
   agent CONFIRMED new LSM hook claims (socket_connect, path/inode unlink+rename, file_open;
   write via file_permission MAY_WRITE; all need CONFIG_BPF_LSM + lsm=bpf, kernel >= 5.7).
+- 2026-06-27 — Owner Q&A resolved **D2–D3, D5–D6** in `architecture.md` §12. **D2:** LSM +
+  cgroup-BPF egress + tracepoints. **D3:** deny-only in v1 P3; full escalation ladder +
+  terminal `decision: kill` planned (Mode B kill-only, no freeze). **D4:** deferred (§14).
+  **D5:** operator-configurable `fail_direction` per scope. **D6:** single-host v1, fleet-ready
+  loader contract. Pruned §9 unchosen mechanisms; updated §5.4/§5.5/§8/§10/§11/§13 and status
+  footer.
 
 ## Decisions
 - Build on `ebpf-host-monitor` rather than rebuild; reuse it as the observation layer.
-- Leaning toward a separate `enforcer` daemon (small auditable TCB) consuming the monitor's
-  telemetry, rather than folding enforcement into the existing agent binary.
-- Hard invariant: the LLM never writes enforcement state; only a trusted loader writes
-  kernel maps, and only for signed bundles that passed the promotion gate.
-- New deny rules are shadow-by-default; enforcement (P5) is sequenced last, after
-  observe/correlate/learn/author/shadow are proven.
-- Enforcement is action-only; intent is never a hot-path input (trust + determinism). Intent
-  serves observability, slow-plane detection, and the denial-feedback `reason` only.
+- Separate `enforcer` daemon (small auditable TCB) consuming the monitor's telemetry, rather
+  than folding enforcement into the monitor binary.
+- Hard invariant: the LLM never writes enforcement state; only a trusted loader writes kernel
+  maps, and only for signed bundles.
+- New deny rules are shadow-by-default; enforcement (P3) follows observe + policy + shadow.
+- Enforcement is action-only; intent is never a hot-path input.
 - Observability is push-first (OTLP) for detection/enforcement/audit, pull (Prometheus) for
-  health only; local disk is state-only (SQLite) plus a tamper-evident audit log; full-event
-  retention is delegated to the backend.
+  health only; local disk is state-only (SQLite) plus a tamper-evident audit log.
+- **D1:** Hybrid enrollment — Mode A (controlled-spawn cgroup) + Mode B (exec-time fingerprint).
+- **D2:** LSM + cgroup-BPF egress + tracepoints (§9).
+- **D3:** Full action set designed; **v1 P3 = deny-only**. Escalation ladder + terminal kill
+  rules planned for P3+; Mode B skips freeze.
+- **D4:** Deferred — LLM location irrelevant until AI authoring (§14).
+- **D5:** Fail direction is **operator config** (`fail_direction: open|closed` per bundle).
+- **D6:** Open-source v1 **must** be single-host; architecture **must not block** a future host
+  management platform (pluggable bundle source on loader).
+- Policy authoring for v1: human-authored curated allow/deny (no LLM, no learning baseline).
+- Recommended default posture: `default_action: allow` (deny-list); allow-list for
+  high-security scopes + future learning assist.
 
 ## Open / Undecided
-- Policy authoring source SETTLED for v1: human-authored curated allow/deny policy (no LLM, no
-  learning baseline). AI authoring + learning-assisted allow-list generation are future (§14).
-- Default posture: `default_action: allow` (deny-list) recommended for v1; `default_action: deny`
-  (allow-list) reserved for high-security tier + future learning assist.
+- None — all v1 architectural decisions resolved. D4 deferred to §14 by design.

@@ -51,8 +51,9 @@ Tetragon `TracingPolicy`, AppArmor/SELinux profiles) — none block on an ML bas
    allow/deny rules and block violations (§5.5, §8, §9).
 3. **Communicate blocks to the agent** — emit a structured, model-comprehensible
    "policy-denied, do-not-retry" message so a cooperative agent stops and re-plans (§5.6).
-4. **Escalate the uncooperative** — repeated violations / terminal rules escalate from deny to
-   freeze (where the cgroup is dedicated) to kill (§5.5).
+4. **Escalate the uncooperative** *(designed; P3+ delivery)* — repeated violations / terminal
+   rules escalate from deny to freeze (Mode-A dedicated cgroup only) to kill (§5.5). Not in the
+   initial P3 deny-only rollout.
 5. **Audit everything** — every decision and every policy change is logged to a tamper-evident,
    exportable stream (§5.7).
 6. **Be safe by construction** — deterministic, signed policy; only a trusted loader writes
@@ -85,7 +86,7 @@ flowchart TB
 
     subgraph FAST["FAST DATA PLANE  (kernel — deterministic, no model)"]
         MAPS["Policy compiled to BPF maps"]
-        LSM["eBPF enforcement hooks\n(allow / deny / freeze / kill)"]
+        LSM["eBPF enforcement hooks\n(allow / deny in-kernel;\nfreeze/kill planned)"]
         MAPS --> LSM
     end
 
@@ -129,8 +130,8 @@ an enforcement source.
 
 **Key gap the monitor does not cover:** the monitor *watches* (tracepoints fire on
 `sys_enter_*`, observational, before the syscall returns). To **block**, we need a kernel
-mechanism that returns a deny verdict — eBPF LSM (KRSI), cgroup-BPF, or seccomp. That is **OPEN
-DECISION D2** (§12).
+mechanism that returns a deny verdict. **D2 resolved (§9):** LSM + cgroup-BPF egress + tracepoints
+(enforce on LSM/cgroup-BPF; observe on tracepoints).
 
 > **Integration:** a **separate `enforcer` daemon** that consumes the monitor's telemetry,
 > rather than folding enforcement into the monitor binary — keeps the trusted enforcement path
@@ -163,9 +164,9 @@ Enrollment is **hybrid** (resolves **D1**), so users never change how they launc
 
 Mode-B detection notes:
 - **Hook choice:** use `sched_process_exec` (always available) — **not** the `bprm_check` LSM
-  hook — so enrollment does **not** drag in the `CONFIG_BPF_LSM`/`lsm=bpf` dependency that §9/D2
-  leaves open for the enforcement phase. (`bprm_check` is fine for *binary identity*, not for
-  argv/env strings, which live in the new `bprm->mm`, not `current->mm` yet.)
+  hook — so enrollment (P0) does **not** require `CONFIG_BPF_LSM`/`lsm=bpf`. Enforcement (P3)
+  does (§9). (`bprm_check` is fine for *binary identity*, not for argv/env strings, which live
+  in the new `bprm->mm`, not `current->mm` yet.)
 - **Markers are a bounded-prefix scan:** env/argv markers (e.g. `CLAUDECODE` /
   `CLAUDE_CODE_ENTRYPOINT`, `CURSOR_*`) are read with a bounded `bpf_probe_read_user` scan; the
   env block is **unindexed**, so a marker past the scan window is missed. **Binary identity
@@ -215,25 +216,36 @@ tradeoff (unavoidable): you can't have *transparent + zero-list + reliable* simu
   atomically swaps them in, keeps version history, and supports instant rollback.
 - **Why separate:** keeps the trusted computing base tiny. Everything that *produces* policy is
   upstream of it.
+- **Deployment (D6 resolved):** open-source **v1 ships single-host** — author, sign, and load on
+  the same machine. The loader accepts signed bundles from a **pluggable source** (local file in
+  v1; HTTP/Git/S3/fleet-push later) so a future host-management platform can distribute policy
+  without changing the loader/enforcer contract. Kernel enforcement is always local; fleet only
+  changes *how the bundle arrives*. Policed hosts hold the **public** verification key only;
+  the signing private key stays on the authoring side (§10).
 
 ### 5.5 Enforcement layer (fast data plane)
 - **What:** eBPF programs on enforcement-capable hooks that read the policy maps and return
   **allow/deny** verdicts (and signal userspace/escalate where a pure deny is insufficient).
-- **Mechanism:** **OPEN DECISION D2** — candidates in §9.
-- **Actions it can take:** **OPEN DECISION D3** (deny syscall, block file/exec/network,
-  freeze/kill).
+- **Mechanism (D2 resolved):** **LSM + cgroup-BPF egress + tracepoints** (§9). LSM for
+  file/exec/privilege (and Mode-B egress); cgroup-BPF for Mode-A egress; tracepoints for
+  observation only.
+- **Actions (D3 resolved):** full set designed — syscall/file/exec deny, network egress block,
+  freeze/kill/quarantine — but **v1 P3 ships deny-only** (`-EPERM`). Escalation ladder and
+  terminal `decision: kill` rules are **planned** for a follow-on phase.
 - **What "deny" does:** an LSM hook returns **`-EPERM`** — the *action* fails; the process is
   **not** auto-killed. Deliberate: most violations should block the action and let the agent
   continue (and receive feedback, §5.6).
-- **Escalation ladder** (repeat offenders / terminal rules):
-  1. **Deny** (`-EPERM`) — default, in-kernel.
+- **Escalation ladder** *(planned — not in v1 P3 deny-only rollout)*:
+  1. **Deny** (`-EPERM`) — default, in-kernel; **ships in P3.**
   2. **Repeated denial** → **freeze** the agent's cgroup. `cgroup.freeze` is a **cgroup-v2
      userspace** action (BPF *detects* the repeat; the trusted enforcer writes the freeze).
-     Clean for a dedicated Mode-A slice; for a shared Mode-B cgroup, escalate via signal instead
-     (freezing the slice would hit unrelated processes).
+     Clean for a dedicated Mode-A slice only.
   3. **Kill / quarantine** via `bpf_send_signal()` (SIGKILL) — targets the **current task** (the
      offender, in whose context the deny hook runs; it cannot target an arbitrary PID) — or via
-     the userspace enforcer for terminal rules.
+     the userspace enforcer for whole-tree kill. **Mode B (shared cgroup):** no freeze — escalate
+     straight to kill when the ladder is enabled (attackers may not spawn agents as expected).
+  4. **Terminal rules:** a rule may set `decision: kill` to skip deny and kill immediately on
+     match (e.g. enforcer tampering) — *planned*, not P3.
 - **Hard rule:** these programs never call userspace synchronously for a verdict and never
   consult a model. Verdicts come only from pre-loaded maps. **Action-only:** a verdict is a
   function of observed action + approved policy alone.
@@ -324,7 +336,7 @@ flowchart LR
     A["Agent enrolled + tagged\n(cgroup anchor / exec fingerprint)"] --> B["Kernel observes actions\n(scoped by agent_id)"]
     B --> C["Evaluate action vs\nloaded policy maps"]
     C -->|"allowed / no match → default"| B
-    C -->|"violates policy"| G["Deny (-EPERM)\n→ escalate if repeated"]
+    C -->|"violates policy"| G["Deny (-EPERM)\n→ escalate if repeated (planned)"]
     G -->|"verdict event"| B
     G -->|"feedback: do-not-retry + reason"| A
     P["Human authors policy\n(curated packs + carve-outs)"] --> S["Shadow-test + sign"]
@@ -375,7 +387,8 @@ policy_bundle:
   version: 7
   agent_scope: "agent:ci-runner"        # cgroup / label / tag selector (§5.1)
   signed_by: "ops-team"                 # signature over the whole bundle
-  default_action: allow                 # deny-list posture (see below); fail dir = D5
+  default_action: allow                 # deny-list posture (see below)
+  fail_direction: open                  # operator choice: open | closed (§10)
   rules:
     - id: deny-egress-except-registry
       rationale: >
@@ -402,6 +415,13 @@ policy_bundle:
         path_in: ["/etc/ai-blocker/*", "/sys/fs/bpf/ai-blocker/*"]
       decision: deny
       state: enforced
+
+    # Terminal kill rules are planned (not v1 P3 deny-only rollout):
+    # - id: terminal-enforcer-tamper
+    #   rationale: "Immediate termination on enforcer tamper attempts."
+    #   match: { action: write|unlink, path_in: ["/etc/ai-blocker/*"] }
+    #   decision: kill
+    #   state: enforced
 
     - id: deny-destroy-system-paths
       rationale: >
@@ -439,8 +459,12 @@ Two postures via `default_action`:
   Low false-positive risk; misses novel-but-bad until a rule exists. Best fit for agents'
   novelty and for availability.
 - `deny` (**allow-list / default-deny**): stronger containment, but the allow-list must be
-  complete or the agent breaks. Tie to fail direction (D5). This is the posture that would
-  later benefit from learning-assisted allow-list generation (§14).
+  complete or the agent breaks. Pair with `fail_direction: closed` (§10). This is the posture
+  that would later benefit from learning-assisted allow-list generation (§14).
+
+**Rule `decision` vocabulary.** `allow` (carve-out), `deny` (block action, `-EPERM`) — **v1
+P3**. `kill` (terminal rule, immediate termination on match) — **planned**, not P3. Freeze and
+repeat-denial escalation are runtime behaviors (§5.5), not per-rule `decision` values.
 
 **Conflict resolution.** Deterministic precedence: **deny wins over allow**; among same-decision
 rules the **most specific match wins** (longest-prefix path / narrowest IP range); `shadow`
@@ -449,28 +473,29 @@ so the kernel never resolves a tie at runtime.
 
 ---
 
-## 9. Enforcement mechanics (kernel) — candidates for D2
+## 9. Enforcement mechanics (kernel) — D2 resolved
 
-The enforcement mechanism is **OPEN DECISION D2**:
+**Chosen mechanism:** **(e) LSM + cgroup-BPF egress + tracepoints** — enforce on LSM and
+cgroup-BPF; observe on tracepoints (reuse `ebpf-host-monitor`).
 
-| Mechanism | How it blocks | Pros | Cons |
-|---|---|---|---|
-| **eBPF LSM (KRSI)** — `BPF_PROG_TYPE_LSM` | Return non-zero from LSM hooks (`file_open`, `bprm_check_security`, `socket_connect`, `task_kill`, …) to deny | True in-kernel allow/deny at the security-decision point; rich context | Needs kernel ≥ 5.7 + `CONFIG_BPF_LSM` + `lsm=bpf`; hooks aren't 1:1 with every syscall |
-| **cgroup-BPF (egress)** — `cgroup/connect4\|6`, `cgroup_skb`, `cgroup/sock_create` | Deny/redirect network ops for a cgroup | Purpose-built per-cgroup network policy; sees dest IP/port; pairs with Mode-A scoping | Network-only; complements LSM |
-| **seccomp-bpf (per-agent profile)** | Syscall filter returns `ERRNO`/`KILL`/`USER_NOTIF` | Mature, widely available; per-process | Syscall-number granularity (poor for "which file/which IP"); installed at spawn |
-| **Observe + react (tracepoints + kill)** | Detect on tracepoints, then `bpf_send_signal()` / userspace kill | Closest to the monitor as-is | **Racy** — action may complete first; good for *containment*, not prevention |
-| **Mix: LSM + cgroup-BPF egress + tracepoints telemetry** | LSM for file/exec/privilege, cgroup-BPF for egress, tracepoints for the stream | Best coverage; clean enforce/observe split | Three subsystems |
+| Layer | Mechanism | Role |
+|---|---|---|
+| File / exec / privilege | **eBPF LSM (KRSI)** — `BPF_PROG_TYPE_LSM` | Return negative errno (e.g. `-EPERM`) from hooks (`file_open`, `bprm_check_security`, `socket_connect`, `inode_unlink`, `inode_rename`, `file_permission`, …) to deny |
+| Network egress (Mode A) | **cgroup-BPF** — `cgroup/connect4\|6` | Per-dedicated-cgroup egress deny at `connect()`; sees dest IP/port. Optional `cgroup/sock_create` for socket-*type* restrictions (no dest IP yet). |
+| Network egress (Mode B) | **LSM `socket_connect`** keyed on tagged-PID map | Per-agent egress on shared cgroups |
+| Telemetry | **tracepoints** | Observation only — cannot block |
+| Escalation fallback *(planned)* | **`bpf_send_signal()`** / userspace kill / cgroup freeze | Kill/quarantine when deny is insufficient; freeze is a **userspace** `cgroup.freeze` write (Mode A only) |
 
-**Recommended to evaluate first:** *LSM (file/exec/privilege) + cgroup-BPF (egress) + reuse
-tracepoints (telemetry)*. `bpf_send_signal()` is the kill/quarantine fallback. Confirm
-`CONFIG_BPF_LSM`, `lsm=...,bpf`, and cgroup v2 on the target hosts before committing.
+**Kernel requirements:** kernel ≥ 5.7, `CONFIG_BPF_LSM`, boot param `lsm=...,bpf`, cgroup v2
+(for Mode-A egress and planned freeze).
 
 > **Egress differs by enrollment mode:** cgroup-BPF egress applies only to a **dedicated
 > (Mode-A) cgroup**. For a shared **Mode-B** agent, egress denial rides the **LSM
-> `socket_connect` hook keyed on the tagged-PID map** instead. Note also that D2 and the
-> Mode-A/B split are **coupled**: if D2 lands on cgroup-BPF-only or seccomp (no BPF-LSM),
-> Mode-B per-task file/path denials become unavailable — LSM is what gives shared-cgroup agents
-> file/exec/privilege coverage.
+> `socket_connect` hook keyed on the tagged-PID map** instead.
+
+**Alternatives not chosen:** seccomp-bpf (syscall-number granularity; poor path/IP matching;
+spawn-time install); observe-and-kill via tracepoints alone (racy — containment, not prevention);
+LSM-only without cgroup-BPF (works, but cgroup-BPF is cleaner for Mode-A egress).
 
 Hot-path rules regardless of mechanism:
 - Verdicts come **only** from pre-loaded maps written by the trusted loader (§5.4).
@@ -500,10 +525,16 @@ What makes "block AI actions on my server" defensible:
    version is retained for instant rollback. **Signing-key custody** is part of the TCB — the
    private key lives only on the authoring host (ideally HSM/TPM/KMS), never on monitored hosts;
    the loader ships only the public key. Key compromise = policy compromise.
-4. **Fail direction is explicit — OPEN DECISION D5.** Configurable per scope:
-   - *Fail-open* (availability-sensitive default): if the enforcer/loader dies or a map is
-     unavailable, actions are allowed (you lose protection, not the service).
-   - *Fail-closed* (high-security): deny on uncertainty; needs careful default-allow carve-outs.
+4. **Fail direction is operator-configurable (D5 resolved).** Each policy bundle sets
+   `fail_direction: open|closed` per `agent_scope` — not a project-wide default imposed on
+   operators:
+   - *Fail-open:* if the enforcer/loader dies or enforcement maps are unavailable, enrolled-agent
+     actions are allowed (lose protection, keep availability).
+   - *Fail-closed:* deny enrolled-agent actions on uncertainty (lose availability, keep
+     containment). Pair with `default_action: deny` and careful carve-outs.
+   - **Implementation:** an `enforcement_active` flag in pinned BPF maps; **LSM hooks and
+     cgroup-BPF programs** for tagged agents apply the scope's `fail_direction` when the flag is
+     clear or maps are missing. Untagged host processes are never affected.
 5. **Blast-radius limits.** Enforcement is scoped to the agent's cgroup/tag, not the whole host,
    so a bad rule can't brick unrelated services.
 6. **Tamper-evidence.** Policy store and audit log are integrity-protected; map writes are
@@ -521,34 +552,24 @@ What makes "block AI actions on my server" defensible:
 | Agent tampers with the enforcer/policy | Deny rules on enforcer paths + signed policy + loader-only map writes | Host-root attacker is in the TCB — out of scope |
 | Policed agent writes enforcement maps directly | Agent runs without `CAP_BPF`/root; loader-owned pinned maps; optional BPF-LSM `bpf()` gating | Host-root attacker — out of scope |
 | Agent evades enrollment (no controlled cgroup, no matching fingerprint) | Mode A where possible; maintained fingerprint set for Mode B; untagged exec of known markers alerts | A never-fingerprinted agent launched outside controlled infra is unmonitored until added |
-| Denied agent retries in a loop | Repeated-denial escalation → freeze/kill (§5.5); best-effort do-not-retry feedback (§5.6) | A compromised agent ignoring feedback burns cycles until escalation triggers |
+| Denied agent retries in a loop | Deny + denial feedback (§5.6); planned escalation → freeze/kill (§5.5) | Until escalation ships, a compromised agent ignoring feedback burns cycles on `-EPERM` |
 | Deny-list misses a novel bad action | `default_action: deny` posture (allow-list) for high-security scopes; shadow rules surface novelty | Deny-list inherently blocks only known-bad; this is the accepted v1 tradeoff |
 | Attacker tampers with policy in transit/at rest | Signature verification, integrity-protected store | Compromise of the signing key |
 | Kernel rootkit hides actions | — | Out of scope |
-| Enforcer crashes | Fail-open/closed policy (D5) | Per chosen regime |
+| Enforcer crashes | Operator-chosen `fail_direction` per scope (§10) | Per configured regime |
 
 ---
 
-## 12. Open decisions (to be made by the owner)
+## 12. Architectural decisions (resolved)
 
-**D1 resolved** (§5.1, hybrid enrollment). **D4 deferred** — "where the LLM runs" only matters
-once AI authoring exists (§14), which is post-v1. Remaining:
-
-> **D2 — Kernel enforcement mechanism.** (a) eBPF LSM/KRSI; (b) cgroup-BPF egress; (c) seccomp-bpf;
-> (d) observe + kill; (e) **mix: LSM + cgroup-BPF + tracepoints** *(recommended)*.
-> *Impacts:* §9, kernel-version requirements.
-
-> **D3 — Enforcement actions.** Which of: syscall/file/exec deny; network egress block;
-> freeze/kill/quarantine. *(Assume the full set, gated by rollout.)*
-> *Impacts:* §5.5 action set, §8 `decision` vocabulary, which hooks/maps are needed.
-
-> **D5 — Fail direction.** Fail-open (availability) vs. fail-closed (security), configurable per
-> scope. *(Assume per-scope configurable, fail-open default.)*
-> *Impacts:* §10.4, enforcer behavior on crash/empty-map.
-
-> **D6 — v1 deployment scope.** Single-host (enforcer + policy + agent on one box) vs. fleet
-> (central policy authoring → per-host enforcers). *(Open-source v1 can start single-host.)*
-> *Impacts:* §13 sequencing, policy distribution.
+| ID | Decision | Resolution |
+|---|---|---|
+| **D1** | Enrollment | **Hybrid** — Mode A (controlled-spawn cgroup) + Mode B (exec-time fingerprint). §5.1. |
+| **D2** | Kernel enforcement mechanism | **LSM + cgroup-BPF egress + tracepoints.** §9. |
+| **D3** | Enforcement actions | **Full set designed; v1 P3 ships deny-only.** Escalation ladder (freeze/kill/quarantine) and terminal `decision: kill` rules are **planned** for a follow-on phase. Mode B skips freeze (kill-only when escalation lands). §5.5. |
+| **D4** | LLM location | **Deferred** — irrelevant until AI policy authoring (§14). |
+| **D5** | Fail direction | **Operator config** — `fail_direction: open\|closed` per bundle/`agent_scope`. §8, §10. |
+| **D6** | v1 deployment scope | **Single-host for open-source v1**; loader/enforcer contract is **fleet-ready** (pluggable bundle source; no host-management platform required in v1). §5.4, §13. |
 
 ---
 
@@ -560,10 +581,11 @@ policy plumbing are solid.
 | Phase | Deliverable | Reuses | New |
 |---|---|---|---|
 | **P0 — Enroll & observe** | Hybrid enrollment (Mode A cgroup + Mode B exec fingerprint); per-`agent_id` action stream; **argv capture** | `ebpf-host-monitor` | enrollment/attribution (§5.1), `agent_id` tag map, argv |
-| **P1 — Policy model + loader** | Policy schema (§8); signed bundle; trusted loader compiling to BPF maps; version history + rollback | SQLite pattern | policy compiler/loader (§5.4) |
+| **P1 — Policy model + loader** | Policy schema (§8); signed bundle; trusted loader (local file source; pluggable for fleet); compile to BPF maps; version history + rollback | SQLite pattern | policy compiler/loader (§5.4) |
 | **P2 — Shadow mode** | Load rules log-only; "would have blocked" reporting against live traffic | OTLP audit | shadow evaluation, policy lifecycle (§7) |
-| **P3 — Enforce** | eBPF enforcement (per D2); deny (`-EPERM`); escalation deny→freeze (dedicated cgroup)→kill | — | enforcer (§5.5) |
+| **P3 — Enforce** | LSM + cgroup-BPF (§9); **deny-only** (`-EPERM`) for file/exec/network/privilege | — | enforcer (§5.5) |
 | **P4 — Denial feedback** | Structured do-not-retry + reason surfaced into the model's context; shim/runtime integration | — | feedback channel (§5.6) — *the differentiator* |
+| **P3+ — Escalation** *(planned)* | Repeat-denial → freeze (Mode A) / kill (Mode B); terminal `decision: kill` rules; quarantine | — | escalation ladder (§5.5) |
 | **P5 — Curated packs + ops** | A generic agent deny-list pack; carve-out config; full audit/observability | monitor OTel/MITRE | policy packs, ops tooling |
 
 Curated deny rules (P5) can be seeded early from the monitor's MITRE mapping. **No learning
@@ -603,7 +625,7 @@ layer (open core = mechanism + generic packs; paid = maintained packs + the assi
 | Observation | emits enriched, tagged agent-action events (incl. argv) | enforcer, audit | kernel eBPF, `ebpf-host-monitor`, enrollment | data |
 | Policy model | curated allow/deny rules | loader | human authors, curated packs | authoring |
 | Policy loader | verify + compile + load signed policy to maps | enforcer | signed bundle | trusted |
-| Enforcer | in-kernel allow/deny/freeze/kill | feedback, audit | loader (maps only) | data |
+| Enforcer | v1 P3: in-kernel deny; P3+ planned: freeze (userspace) / kill | feedback, audit | loader (maps only) | data |
 | Denial feedback | returns do-not-retry + reason to the model | agent runtime / model | enforcer, rule rationale | cross (advisory) |
 | Audit/observability | records decisions + policy changes | humans, backends | all of the above | cross |
 
@@ -626,9 +648,12 @@ layer (open core = mechanism + generic packs; paid = maintained packs + the assi
   to the model after a block (§5.6); the project's differentiator.
 - **Shadow mode** — a rule is evaluated and logged ("would have blocked") but does not enforce.
 - **KRSI** — Kernel Runtime Security Instrumentation; eBPF programs on LSM hooks.
+- **Quarantine** — containment beyond a single deny: freeze (Mode A) or kill (Mode B) plus audit
+  lock; planned for P3+, not v1 P3.
 
 ---
 
-*Status: draft for review. v1 = policy-strict enforcement + model-comprehensible denial feedback.
-D1 resolved (§5.1); D2/D3/D5/D6 open (§12); D4 deferred to §14. Builds on `ebpf-host-monitor` for
-observation; learning/AI authoring are explicitly future (§14).*
+*Status: design decisions D1–D3, D5–D6 resolved (§12); D4 deferred to §14. v1 = policy-strict
+enforcement (deny-only in P3) + model-comprehensible denial feedback. Single-host deployment;
+fleet-ready bundle contract. Builds on `ebpf-host-monitor` for observation; learning/AI authoring
+are explicitly future (§14).*
