@@ -153,11 +153,67 @@ Each component has one clear purpose, a defined interface, and can be tested in 
 ### 5.1 Observation layer (data → slow plane)
 - **What:** eBPF programs + userspace enricher producing a structured event stream of agent
   actions (exec, file, network, privilege, lifecycle).
-- **Source:** reuse `ebpf-host-monitor` (§4).
-- **Addition:** scope events to the monitored agent's process tree via **cgroup id** (the
-  agent and its descendants run in a dedicated cgroup), so "normal" is learned per agent,
-  not per whole host. (Scope target is **OPEN DECISION D1**.)
-- **Interface out:** enriched event records (existing 72-byte header schema + tails).
+- **Source:** reuse `ebpf-host-monitor` (§4). Observation is via **tracepoints** — the right
+  tool for *watching*. Tracepoints cannot *block* (they fire on `sys_enter_*`, before the
+  syscall returns), so blocking is handled separately in §9 (LSM + cgroup-BPF).
+- **Command capture (P0 requirement):** rules and divergence detection match on command
+  *arguments* (which URL, which path, which flags), not just the binary. The monitor today
+  captures `comm` (16 bytes) + exec filename tail (≤128 bytes) but **not full argv** — this
+  project elevates **argv capture to a P0 requirement** (it is only "planned" upstream).
+  Captured at the `sys_enter_execve`/`execveat` tracepoint via a **bounded** `bpf_probe_read_user`
+  scan of `argv` (user memory), so only a **bounded prefix** of argv is recorded (fixed max
+  args × fixed max length, per verifier/stack limits). Userspace re-resolves full paths where
+  needed.
+- **Interface out:** enriched event records (existing 72-byte header schema + tails + argv),
+  each tagged with the owning `agent_id` (see §5.1.1).
+
+### 5.1.1 Agent enrollment & attribution (how a process becomes "AI-tagged")
+A tracepoint fires host-wide, so we must answer "does this syscall belong to a monitored AI
+agent?" There is **no kernel `is-AI` bit**, and process lineage alone cannot infer it — a
+bare PID's ancestry tells you "child of X," not "this is AI." AI-ness must be **planted at a
+known anchor**, then **propagated** down the process tree. Attribution therefore has two
+layers:
+
+- **Anchor (the source of truth):** a process we *know* is an agent gets tagged.
+- **Propagation:** every descendant inherits the tag. The propagation path **depends on the
+  enrollment mode** (below): Mode A uses **cgroup membership** (robust to PID reuse, since a
+  child stays in the parent's cgroup until explicitly migrated); Mode B uses the reuse-safe
+  **process-lineage** walk (`(pid, start_ns)` proctable, ancestor chain back to the tagged
+  root) recorded in a **tagged-PID BPF map**, because a Mode-B agent shares an arbitrary
+  cgroup with unrelated processes. The agent is the lineage root; a `bash → curl → sh` chain
+  it spawns is all attributed to it.
+
+The anchor is planted by a **hybrid enrollment** model (resolves **D1**) so users never have
+to change how they launch their agent:
+
+| Mode | When it applies | How the anchor is planted | Propagation / enforcement | Cost |
+|---|---|---|---|---|
+| **A — controlled spawn** | We own the host image / launch infra (CI runners, devcontainers, sandboxes, systemd units) | Bake cgroup placement into the entrypoint (`Slice=ai-agents.slice` / container init); inheritance does the rest | Dedicated cgroup → cgroup-BPF egress **and** LSM both apply; blast-radius = the slice | None to the user; requires owning the spawn point |
+| **B — eBPF exec-time fingerprint** | We do *not* control the launch (developer just runs `claude` in a terminal) | A BPF program on the **`sched_process_exec` tracepoint** matches **binary identity** (inode/path) + **env/argv markers** and writes the PID-tree into a tagged map | Shared cgroup → propagate via **tagged-PID/lineage map**; enforce via **LSM keyed on that map** (cgroup-BPF egress does **not** apply — no clean way to migrate a task into an agent cgroup) | Transparent to the user; *we* maintain a finite, known-agent fingerprint set |
+
+Notes on Mode B detection:
+- **Hook choice matters.** Use the **`sched_process_exec` tracepoint** (always available) for
+  enrollment — **not** the `bprm_check` LSM hook — so P0 does **not** drag in the
+  `CONFIG_BPF_LSM`/`lsm=bpf` dependency that §9/D2 leaves open for P5. `bprm_check` is suitable
+  only for *binary identity* (it can read `bprm->file`/inode), not for argv/env strings (those
+  live in the new `bprm->mm`, not yet `current->mm`).
+- **Markers are a bounded-prefix scan.** Env/argv markers (e.g. `CLAUDECODE` /
+  `CLAUDE_CODE_ENTRYPOINT`, `CURSOR_*`) are read with a bounded `bpf_probe_read_user` scan; the
+  env block is **unindexed**, so a marker placed past the scan window is missed — an evasion
+  vector. Therefore **binary identity (inode/path) is the required backstop**, not a bare name
+  (`codex` is a common English word → high false-positive risk as a name match; match on
+  inode/path or a `CODEX_*`-style marker instead).
+- **Markers are agent-controlled** (inherited by children, and removable). They speed
+  detection but cannot be trusted alone; see the enrollment-evasion row in §11.
+
+**Default: B everywhere, A wherever we control the environment.** Agent-agnostic where we own
+the spawn point; a maintained-but-small fingerprint set otherwise — the maintenance burden
+lands on the operator, never on end users. Fundamental tradeoff (unavoidable): you cannot
+have *transparent + zero-list + reliable* simultaneously; we trade a small fingerprint set
+for transparency. (Mode-A note: lock down cgroup delegation so a tagged agent cannot write
+its own `cgroup.procs` and migrate out of `ai-agents.slice` to shed attribution.)
+
+- **Interface out:** `agent_id` tag per in-scope process; non-tagged processes are ignored.
 
 ### 5.2 Intent capture
 - **What:** ingests the agent's *declared* intent — the task/prompt, the plan, and the
@@ -241,6 +297,21 @@ Each component has one clear purpose, a defined interface, and can be tested in 
 - **Mechanism:** **OPEN DECISION D2** — candidates in §9.
 - **Actions it can take:** **OPEN DECISION D3** (deny syscall, block file/exec/network,
   kill/freeze process).
+- **What "deny" actually does:** an LSM hook returns **`-EPERM`**, so the *action* fails —
+  the process is **not** automatically killed; the offending syscall just gets a permission
+  error, exactly like any OS denial. This is deliberate: most policy violations should block
+  the action and let the agent continue, not nuke the process.
+- **Escalation ladder** (for repeat offenders / high-severity rules):
+  1. **Deny** the action (`-EPERM`) — default; done in-kernel by the BPF program.
+  2. **Repeated denial** of the same action → **freeze** the agent's cgroup. Note
+     `cgroup.freeze` is a **cgroup-v2 userspace** action (the BPF program *detects* the repeat
+     denial; the trusted userspace enforcer writes `cgroup.freeze`). Freezing is clean for a
+     dedicated **Mode-A** slice but would freeze unrelated processes in a shared **Mode-B**
+     cgroup — so for Mode B, escalate via signal/quarantine instead.
+  3. **Kill / quarantine** via `bpf_send_signal()` (SIGKILL) — which targets the **current
+     task** (the offender, in whose context the deny hook runs; it cannot target an arbitrary
+     PID) — or via the userspace enforcer for rules marked terminal. Repeated-denial counting
+     and escalation policy are part of the rule (§8).
 - **Hard rule:** these programs never call into userspace synchronously for a verdict and
   never depend on the LLM. Verdicts come only from pre-loaded maps.
 
@@ -252,20 +323,55 @@ Each component has one clear purpose, a defined interface, and can be tested in 
   reconstructable after the fact for incident review and for *training the next round* of
   policy.
 
+### 5.10 Denial feedback channel (a signal the model can understand)
+- **Problem:** a denied syscall returns a bare `-EPERM`. To the model that is an opaque
+  failure indistinguishable from a missing file or a network blip, so a naive agent simply
+  **retries forever**. We want the model to *understand* "this was blocked by policy — do not
+  retry."
+- **What:** the **reverse path** of the intent channel (§5.2). When the enforcer denies an
+  action, it emits a structured **policy-decision record** that the agent runtime surfaces
+  back into the model's context (as a tool result / system message):
+
+  ```json
+  {
+    "correlation_id": "task-8f3c",
+    "decision": "denied",
+    "action": "connect",
+    "target": "203.0.113.9:443",
+    "matched_rule": "deny-egress-except-registry",
+    "reason": "Outbound to public IPs isn't permitted for task class 'build'. Use the internal registry (10.0.0.0/8).",
+    "retry": "do-not-retry",
+    "appeal": "If this is required, request a policy change via the promotion gate."
+  }
+  ```
+
+- **How it routes:** enforcer → audit/feedback bus → agent runtime hook → model context. The
+  kernel deny carries only pid/cgroup context, **not** a `correlation_id` — that is
+  reconstructed in **userspace** via the same `cgroup`/`(pid, start_ns)` → `correlation_id`
+  join the correlator uses (§5.3), so nothing in the hot path depends on the intent channel.
+  The human-readable `reason` reuses the **rationale** the LLM already wrote for that rule
+  (§8), so the explanation is consistent end-to-end.
+- **Trust posture:** the feedback is **advisory, best-effort, and one-directional** — it
+  *informs* the model; it never relaxes enforcement. A cooperative agent stops and re-plans
+  (or files an appeal through the gate); an uncooperative or compromised one ignores it and
+  hits the **escalation ladder** (§5.8) instead. So comprehension is offered, not required,
+  and we never depend on the policed party behaving well.
+
 ---
 
 ## 6. End-to-end data flow (the lifecycle)
 
 ```mermaid
 flowchart LR
-    A["Agent runs task\n(declares intent)"] --> B["Kernel observes actions\n(eBPF telemetry)"]
+    A["Agent enrolled + tagged\n(cgroup anchor / exec fingerprint)\nruns task, declares intent"] --> B["Kernel observes actions\n(eBPF telemetry, scoped by agent_id)"]
     B --> C["Correlate intent vs action\n+ score vs baseline"]
     C --> D["LLM drafts/updates policy\n(allow normal, deny divergence)"]
     D --> E{"Promotion gate"}
     E -->|"shadow / simulate"| E
     E -->|"approved + signed"| F["Loader compiles to BPF maps"]
-    F --> G["Kernel enforces\nallow / deny / kill"]
+    F --> G["Kernel enforces\ndeny (-EPERM) / freeze / kill"]
     G -->|"enforcement events"| B
+    G -->|"denial feedback\n(do-not-retry + reason)"| A
     E -->|"rejected / edited"| D
 ```
 
@@ -457,6 +563,8 @@ This is the part that makes "let an AI block things on my server" defensible.
 | Attacker poisons the baseline (low-and-slow) | Anomalous-window gating, novelty, human review of allow-rules | Very slow drift over the learning horizon |
 | Attacker tampers with policy bundle in transit/at rest | Signature verification, integrity-protected store | Compromise of the gate's signing key |
 | Policed agent writes enforcement maps directly | Agent runs without `CAP_BPF`/root; loader-owned pinned maps; optional BPF-LSM `bpf()` gating (§10.1) | Host-root attacker is in the TCB — **out of scope** |
+| Agent evades enrollment (not in a controlled cgroup, no matching fingerprint) | Mode A (controlled spawn) where possible; maintained marker/fingerprint set for Mode B; untagged exec of known-agent markers alerts | A novel agent we've never fingerprinted, launched outside controlled infra, is unmonitored until added |
+| Denied agent retries in a loop | Repeated-denial escalation → cgroup freeze / kill (§5.8); best-effort do-not-retry feedback (§5.10) | A compromised agent ignoring feedback burns cycles until escalation triggers |
 | Kernel rootkit hides actions | — | **Out of scope** (same as monitor) |
 | Enforcer crashes | Fail-open/closed policy (D5) | Per chosen regime |
 
@@ -464,14 +572,19 @@ This is the part that makes "let an AI block things on my server" defensible.
 
 ## 12. Open decisions (to be made by the owner)
 
-These mirror the scoping questions and are **deliberately unresolved** in this draft. The
-architecture above is written to accommodate any choice; resolving them will prune sections.
+These mirror the scoping questions. **D1 is now resolved** (see §5.1.1); D2–D6 remain
+deliberately open. The architecture is written to accommodate any remaining choice;
+resolving them will prune sections.
 
-> **D1 — Monitoring/enforcement target.** *What exactly is scoped?*
-> Options: (a) a specific AI-agent process tree we launch, cgroup-scoped *(leading
-> assumption in this doc)*; (b) all host processes with agents identified heuristically;
-> (c) containerized workloads, one container/pod per agent.
-> *Impacts:* §5.1 scoping, §8 `agent_scope` selector, blast-radius (§10.5).
+> **D1 — Monitoring/enforcement target & enrollment. ✅ RESOLVED → hybrid (§5.1.1).**
+> Attribution = a planted **anchor** (cgroup tag) + **propagation** to descendants (cgroup
+> membership + reuse-safe lineage). Enrollment is **hybrid**: **Mode A** (controlled spawn
+> env — bake cgroup placement into the host image / launch infra) wherever we own the spawn
+> point, and **Mode B** (eBPF exec-time fingerprint on binary identity + env/argv markers,
+> with an operator-maintained known-agent set) everywhere else. Both are transparent to end
+> users. *Residual sub-choice:* the exact scope unit (bare process tree vs. container/pod)
+> per environment — does not change the model.
+> *Impacts:* §5.1/§5.1.1, §8 `agent_scope` selector, blast-radius (§10.5), P0 (§13).
 
 > **D2 — Kernel enforcement mechanism (the fast data plane).**
 > Options: (a) eBPF LSM / KRSI; (b) observe-only tracepoints + userspace kill; (c)
@@ -512,12 +625,12 @@ only after observation/learning is trustworthy.
 
 | Phase | Deliverable | Reuses | New |
 |---|---|---|---|
-| **P0 — Scope & observe** | Agent runs in a dedicated cgroup; monitor produces per-agent action stream | `ebpf-host-monitor` | cgroup scoping, `agent_id` dimension |
-| **P1 — Intent capture** | SDK/shim that reports agent task/plan/tool-calls; correlation ids | — | intent service (§5.2) |
-| **P2 — Correlate & baseline** | Intent-vs-action divergence findings; per-agent envelopes | monitor scorer/baseline | correlator (§5.3) |
+| **P0 — Enroll, scope & observe** | Hybrid enrollment (Mode A cgroup placement + Mode B eBPF exec-time fingerprint); per-`agent_id` action stream; **argv capture** | `ebpf-host-monitor` | enrollment/attribution (§5.1.1), `agent_id` tag map, argv capture |
+| **P1 — Intent + feedback channel** | SDK/shim reporting task/plan/tool-calls (forward) and surfacing policy decisions (reverse); correlation ids | — | intent service (§5.2), denial-feedback wiring (§5.10) |
+| **P2 — Correlate & baseline** | Intent-vs-action divergence findings; per-agent/task-class envelopes | monitor scorer/baseline | correlator (§5.3) |
 | **P3 — Policy author (offline)** | LLM drafts policy bundles from §2 outputs; **no enforcement yet** | monitor MITRE/context | policy author (§5.5), schema (§8) |
 | **P4 — Gate & shadow** | Promotion gate UI/CLI; shadow simulation ("would have blocked") | OTLP audit | gate (§5.6), simulator |
-| **P5 — Enforce (canary)** | eBPF enforcement (per D2) on a canary scope; loader; signing; rollback | — | enforcer (§5.8), loader (§5.7) |
+| **P5 — Enforce (canary)** | eBPF enforcement (per D2); deny→freeze→kill escalation; loader; signing; rollback; live denial feedback | — | enforcer (§5.8), loader (§5.7), feedback emit (§5.10) |
 | **P6 — Promote & operate** | Auto-promotion gates, fleet distribution, full audit | monitor OTel | distribution, ops tooling |
 
 Enforcement (P5) is intentionally last: we do not block anything until observation,
@@ -529,8 +642,10 @@ correlation, learning, authoring, and shadow-mode simulation are proven.
 
 | Unit | Does | Used by | Depends on | Plane |
 |---|---|---|---|---|
-| Observation layer | emits enriched agent-action events | correlator, baseline, audit | kernel eBPF, `ebpf-host-monitor` | data→slow |
+| Enrollment & attribution | tags agent process trees (anchor + propagation) | observation, enforcer | cgroup, eBPF exec hook, fingerprint set | data |
+| Observation layer | emits enriched agent-action events (incl. argv) | correlator, baseline, audit | kernel eBPF, `ebpf-host-monitor`, enrollment | data→slow |
 | Intent capture | records declared agent intent | correlator | agent runtime SDK/shim | slow |
+| Denial feedback | returns do-not-retry + reason to the model | agent runtime / model | enforcer, intent channel | cross (advisory) |
 | Correlator | scores intent-vs-action divergence | policy author, gate | observation, intent, baseline | slow |
 | Baseline | learned normal envelopes | correlator, policy author | observation | slow |
 | Policy author (LLM) | drafts deterministic rules | gate | correlator, baseline, MITRE | slow |
@@ -555,9 +670,17 @@ correlation, learning, authoring, and shadow-mode simulation are proven.
 - **Shadow mode** — a rule is evaluated and logged ("would have blocked") but does not
   enforce.
 - **KRSI** — Kernel Runtime Security Instrumentation; eBPF programs on LSM hooks.
+- **Enrollment** — planting the "this is an AI agent" tag at a known anchor (controlled-spawn
+  cgroup, or eBPF exec-time fingerprint), so attribution can propagate to descendants.
+- **Anchor / propagation** — the anchor is the known-agent process; propagation spreads its
+  `agent_id` tag to descendants via cgroup membership + reuse-safe lineage.
+- **Fingerprint set** — the operator-maintained list of known-agent binary identities + env/
+  argv markers used by Mode-B enrollment.
+- **Denial feedback** — the advisory reverse signal (`do-not-retry` + human-readable reason)
+  sent to the model after an action is blocked (§5.10).
 
 ---
 
-*Status: draft for review. Open decisions D1–D6 (§12) are intentionally unresolved and to be
-filled in by the project owner. This document builds on `ebpf-host-monitor` and will be
-revised as decisions land.*
+*Status: draft for review. D1 (enrollment/attribution) is resolved (§5.1.1, hybrid); open
+decisions D2–D6 (§12) remain to be filled in by the project owner. This document builds on
+`ebpf-host-monitor` and will be revised as decisions land.*
