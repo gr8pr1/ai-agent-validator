@@ -6,9 +6,10 @@
 #   argv_contains        : every glob must match at least one argv element
 #   env_markers.any_of   : at least one of these env var NAMES must be present
 #
-# For interpreted agents (Claude Code, Cursor) the kernel-visible binary is the
-# interpreter (node), so argv + env markers are the real discriminators. For
-# compiled agents, interpreter_path is the strong signal.
+# For interpreted agents (Claude Code, Cursor CLI) the kernel-visible binary is often
+# the interpreter (node/python), so argv + env markers are the real discriminators.
+# Cursor IDE Agent also enrolls shell subprocesses that carry CURSOR_AGENT /
+# CURSOR_TRACE_ID. For compiled agents, interpreter_path / basename is the strong signal.
 #
 # NOTE: argv/env are captured as a bounded prefix; a marker past the window is
 # missed, so keep markers early/unique. These globs/markers are best-effort
@@ -42,7 +43,7 @@ fingerprints:
     match:
       interpreter_path: "*/.local/share/claude/versions/*"
 
-  - id: cursor-agent
+  - id: cursor-agent-node
     agent_id: cursor
     identity_class: interpreted
     confidence: high
@@ -53,12 +54,139 @@ fingerprints:
           - CURSOR_AGENT
           - CURSOR_TRACE_ID
 
-  - id: aider
+  # Cursor CLI: node runs versioned index.js under ~/.local/share/cursor-agent/.
+  - id: cursor-cli-node
+    agent_id: cursor
+    identity_class: interpreted
+    confidence: high
+    match:
+      interpreter_basename: node
+      argv_contains:
+        - "*/.local/share/cursor-agent/*"
+
+  # Cursor CLI install wrappers (~/.local/bin/cursor-agent or unified `agent` command).
+  - id: cursor-cli-wrapper
+    agent_id: cursor
+    identity_class: compiled
+    confidence: high
+    match:
+      interpreter_basename: cursor-agent
+
+  - id: cursor-cli-wrapper-path
+    agent_id: cursor
+    identity_class: compiled
+    confidence: high
+    match:
+      interpreter_path: "*/.local/bin/cursor-agent"
+
+  # Unified `agent` command; basename alone is generic — path is intentionally narrow.
+  - id: cursor-cli-agent-path
+    agent_id: cursor
+    identity_class: compiled
+    confidence: high
+    match:
+      interpreter_path: "*/.local/bin/agent"
+
+  # Cursor IDE Agent terminal: injects CURSOR_AGENT / CURSOR_TRACE_ID into shell subprocesses.
+  - id: cursor-ide-shell-bash
+    agent_id: cursor
+    identity_class: interpreted
+    confidence: high
+    match:
+      interpreter_basename: bash
+      env_markers:
+        any_of:
+          - CURSOR_AGENT
+          - CURSOR_TRACE_ID
+
+  - id: cursor-ide-shell-zsh
+    agent_id: cursor
+    identity_class: interpreted
+    confidence: high
+    match:
+      interpreter_basename: zsh
+      env_markers:
+        any_of:
+          - CURSOR_AGENT
+          - CURSOR_TRACE_ID
+
+  - id: cursor-ide-shell-sh
+    agent_id: cursor
+    identity_class: interpreted
+    confidence: high
+    match:
+      interpreter_basename: sh
+      env_markers:
+        any_of:
+          - CURSOR_AGENT
+          - CURSOR_TRACE_ID
+
+  - id: cursor-ide-shell-dash
+    agent_id: cursor
+    identity_class: interpreted
+    confidence: high
+    match:
+      interpreter_basename: dash
+      env_markers:
+        any_of:
+          - CURSOR_AGENT
+          - CURSOR_TRACE_ID
+
+  # pip / pipx entrypoint: python3 …/bin/aider (see aider.main:main in pyproject.toml).
+  - id: aider-pip-py3
     agent_id: aider
     identity_class: interpreted
-    confidence: low
+    confidence: high
     match:
       interpreter_basename: python3
       argv_contains:
-        - "*/aider"
-        - "*/aider/__main__.py"
+        - "*/bin/aider"
+
+  - id: aider-pip-py
+    agent_id: aider
+    identity_class: interpreted
+    confidence: high
+    match:
+      interpreter_basename: python
+      argv_contains:
+        - "*/bin/aider"
+
+  # python -m aider (require both -m and aider argv tokens to avoid matching a local script named aider).
+  - id: aider-module-py3
+    agent_id: aider
+    identity_class: interpreted
+    confidence: high
+    match:
+      interpreter_basename: python3
+      argv_contains:
+        - "-m"
+        - "aider"
+
+  - id: aider-module-py
+    agent_id: aider
+    identity_class: interpreted
+    confidence: high
+    match:
+      interpreter_basename: python
+      argv_contains:
+        - "-m"
+        - "aider"
+
+  # Direct __main__.py invocation (uncommon but valid).
+  - id: aider-main-py3
+    agent_id: aider
+    identity_class: interpreted
+    confidence: high
+    match:
+      interpreter_basename: python3
+      argv_contains:
+        - "*/site-packages/aider/__main__.py"
+
+  - id: aider-main-py
+    agent_id: aider
+    identity_class: interpreted
+    confidence: high
+    match:
+      interpreter_basename: python
+      argv_contains:
+        - "*/site-packages/aider/__main__.py"

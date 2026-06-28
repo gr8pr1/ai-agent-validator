@@ -9,8 +9,8 @@ func testSet() *Set {
 			Match: Match{InterpreterBasename: "node", EnvMarkers: Markers{AnyOf: []string{"CLAUDECODE"}}},
 		},
 		{
-			ID: "aider", AgentID: "aider", IdentityClass: "interpreted",
-			Match: Match{InterpreterBasename: "python3", ArgvContains: []string{"*/aider"}},
+			ID: "aider-pip-py3", AgentID: "aider", IdentityClass: "interpreted",
+			Match: Match{InterpreterBasename: "python3", ArgvContains: []string{"*/bin/aider"}},
 		},
 		{
 			ID: "compiled-bot", AgentID: "bot", IdentityClass: "compiled",
@@ -80,6 +80,52 @@ func TestMatchNativeClaudeBasename(t *testing.T) {
 	})
 	if !res.Matched || res.Fingerprint.ID != "claude-code-native" {
 		t.Fatalf("expected native claude match, got matched=%v trace=%v", res.Matched, res.Trace)
+	}
+}
+
+func TestMatchAiderModule(t *testing.T) {
+	s := &Set{Fingerprints: []Fingerprint{{
+		ID: "aider-module-py3", AgentID: "aider",
+		Match: Match{InterpreterBasename: "python3", ArgvContains: []string{"-m", "aider"}},
+	}}}
+	res := s.Evaluate(Observation{
+		BinaryPath: "/usr/bin/python3",
+		Argv:       []string{"python3", "-m", "aider", "--model", "sonnet"},
+	})
+	if !res.Matched || res.Fingerprint.ID != "aider-module-py3" {
+		t.Fatalf("expected aider module match, got matched=%v trace=%v", res.Matched, res.Trace)
+	}
+}
+
+func TestMatchCursorCLI(t *testing.T) {
+	s := &Set{Fingerprints: []Fingerprint{{
+		ID: "cursor-cli-node", AgentID: "cursor",
+		Match: Match{InterpreterBasename: "node", ArgvContains: []string{"*/.local/share/cursor-agent/*"}},
+	}}}
+	res := s.Evaluate(Observation{
+		BinaryPath: "/usr/bin/node",
+		Argv:       []string{"node", "/home/user/.local/share/cursor-agent/versions/2025.10.22/index.js"},
+	})
+	if !res.Matched || res.Fingerprint.ID != "cursor-cli-node" {
+		t.Fatalf("expected cursor cli match, got matched=%v trace=%v", res.Matched, res.Trace)
+	}
+}
+
+func TestMatchCursorIDEShell(t *testing.T) {
+	s := &Set{Fingerprints: []Fingerprint{{
+		ID: "cursor-ide-shell-bash", AgentID: "cursor",
+		Match: Match{
+			InterpreterBasename: "bash",
+			EnvMarkers:          Markers{AnyOf: []string{"CURSOR_AGENT"}},
+		},
+	}}}
+	res := s.Evaluate(Observation{
+		BinaryPath: "/usr/bin/bash",
+		Argv:       []string{"bash", "-c", "git status"},
+		EnvKeys:    []string{"PATH", "CURSOR_AGENT"},
+	})
+	if !res.Matched || res.Fingerprint.ID != "cursor-ide-shell-bash" {
+		t.Fatalf("expected cursor ide shell match, got matched=%v trace=%v", res.Matched, res.Trace)
 	}
 }
 
