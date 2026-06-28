@@ -147,29 +147,24 @@ int handle_exec(struct trace_event_raw_sched_process_exec *ctx)
 SEC("tracepoint/sched/sched_process_fork")
 int handle_fork(struct trace_event_raw_sched_process_fork *ctx)
 {
-	// Read tracepoint ctx before bpf_ringbuf_reserve; newer verifiers reject
-	// ctx dereference after helpers that may modify the ctx pointer.
 	__u32 child_pid = (__u32)ctx->child_pid;
 	__u32 parent_pid = (__u32)ctx->parent_pid;
 	char child_comm[16];
-	__builtin_memcpy(child_comm, ctx->child_comm, sizeof(child_comm));
+	bpf_probe_read_kernel(child_comm, sizeof(child_comm), &ctx->child_comm);
 
-	struct enroll_event *e = bpf_ringbuf_reserve(&events, EVENT_HEADER_SIZE, 0);
-	if (!e) {
+	struct enroll_event e;
+	__builtin_memset(&e, 0, EVENT_HEADER_SIZE);
+
+	e.timestamp_ns = bpf_ktime_get_ns();
+	e.cgroup_id = bpf_get_current_cgroup_id();
+	e.pid = child_pid;
+	e.ppid = parent_pid;
+	e.uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
+	e.event_type = EVENT_FORK;
+	__builtin_memcpy(e.comm, child_comm, sizeof(e.comm));
+
+	if (bpf_ringbuf_output(&events, &e, EVENT_HEADER_SIZE, 0) != 0)
 		inc_drop();
-		return 0;
-	}
-	__builtin_memset(e, 0, EVENT_HEADER_SIZE);
-
-	e->timestamp_ns = bpf_ktime_get_ns();
-	e->cgroup_id = bpf_get_current_cgroup_id();
-	e->pid = child_pid;
-	e->ppid = parent_pid;
-	e->uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
-	e->event_type = EVENT_FORK;
-	__builtin_memcpy(e->comm, child_comm, sizeof(e->comm));
-
-	bpf_ringbuf_submit(e, 0);
 	return 0;
 }
 
@@ -188,19 +183,16 @@ int handle_exit(struct trace_event_raw_sched_process_template *ctx)
 	char comm[16];
 	bpf_get_current_comm(comm, sizeof(comm));
 
-	struct enroll_event *e = bpf_ringbuf_reserve(&events, EVENT_HEADER_SIZE, 0);
-	if (!e) {
+	struct enroll_event e;
+	__builtin_memset(&e, 0, EVENT_HEADER_SIZE);
+
+	e.timestamp_ns = bpf_ktime_get_ns();
+	e.start_time_ns = start_time_ns;
+	e.pid = tgid;
+	e.event_type = EVENT_EXIT;
+	__builtin_memcpy(e.comm, comm, sizeof(e.comm));
+
+	if (bpf_ringbuf_output(&events, &e, EVENT_HEADER_SIZE, 0) != 0)
 		inc_drop();
-		return 0;
-	}
-	__builtin_memset(e, 0, EVENT_HEADER_SIZE);
-
-	e->timestamp_ns = bpf_ktime_get_ns();
-	e->start_time_ns = start_time_ns;
-	e->pid = tgid;
-	e->event_type = EVENT_EXIT;
-	__builtin_memcpy(e->comm, comm, sizeof(e->comm));
-
-	bpf_ringbuf_submit(e, 0);
 	return 0;
 }
