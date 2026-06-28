@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in `ebpf-ai-blocker`. The project is early; the most
+Thanks for your interest in **AI Agent Validator** (`ai-agent-validator`). The project is early; the most
 valuable contributions right now are **agent fingerprints** and feedback on the
 [architecture](architecture.md).
 

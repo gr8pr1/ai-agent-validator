@@ -1,4 +1,4 @@
-# aiblocker-agent (P0: enroll & observe)
+# AI Agent Validator — agent (P0: enroll & observe)
 
 A self-contained Go + eBPF agent that enrolls AI-agent processes (Mode A cgroup /
 Mode B fingerprint), propagates the `agent_id` tag across the process tree, and

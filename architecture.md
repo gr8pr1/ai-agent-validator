@@ -1,4 +1,4 @@
-# Architecture — eBPF AI-Action Blocker
+# Architecture — AI Agent Validator
 
 > **Thesis (v1):** Define the policy once. The kernel enforces it on every AI-agent process.
 > When it blocks an action, it tells the agent — in terms the *model* understands — that the
@@ -444,14 +444,14 @@ policy_bundle:
       rationale: "Agents must not tamper with the enforcer/monitor or its policy."
       match:
         action: open|write|unlink
-        path_in: ["/etc/ai-blocker/*", "/sys/fs/bpf/ai-blocker/*"]
+        path_in: ["/etc/ai-agent-validator/*", "/sys/fs/bpf/ai-agent-validator/*"]
       decision: deny
       state: enforced
 
     # Terminal kill rules are planned (not v1 P3 deny-only rollout):
     # - id: terminal-enforcer-tamper
     #   rationale: "Immediate termination on enforcer tamper attempts."
-    #   match: { action: write|unlink, path_in: ["/etc/ai-blocker/*"] }
+    #   match: { action: write|unlink, path_in: ["/etc/ai-agent-validator/*"] }
     #   decision: kill
     #   state: enforced
 

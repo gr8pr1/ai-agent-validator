@@ -1,6 +1,6 @@
 # Security Policy
 
-`ebpf-ai-blocker` is a security tool that loads eBPF programs into the kernel and is
+**AI Agent Validator** (`ai-agent-validator`) is a security tool that loads eBPF programs into the kernel and is
 intended (in later phases) to make allow/deny decisions about process behavior. We
 take its correctness and safety seriously.
 

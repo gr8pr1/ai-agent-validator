@@ -1,8 +1,8 @@
-# ebpf-ai-blocker
+# AI Agent Validator
 
-Policy-strict, kernel-enforced guardrails for AI agents on Linux.
+Policy-strict, kernel-enforced guardrails for AI agents on Linux (`ai-agent-validator`).
 
-AI coding agents now run real commands on real machines. `ebpf-ai-blocker` watches
+AI coding agents now run real commands on real machines. **AI Agent Validator** watches
 those agents from the kernel, attributes every action to the agent that caused it,
 and (in later phases) blocks actions that violate a deterministic, human-authored
 policy — returning a model-comprehensible "do not retry" signal.

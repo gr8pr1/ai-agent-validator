@@ -1,4 +1,4 @@
-# ebpf-ai-blocker P0 agent configuration.
+# AI Agent Validator — P0 agent configuration.
 
 log_level: info   # debug|info|warn|error
 log_format: text  # text|json
