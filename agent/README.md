@@ -77,7 +77,8 @@ sudo ./scripts/integration-test.sh
 ```
 
 Spawns a fake agent (node basename + `CLAUDECODE` marker) plus a control process and
-asserts the agent is enrolled (recall) while the control is not (precision).
+asserts the agent is enrolled (recall) while the control is not (precision). The fake
+agent uses `env -i` so `CLAUDECODE` appears inside the BPF env prefix (512 bytes).
 
 ## Package layout
 

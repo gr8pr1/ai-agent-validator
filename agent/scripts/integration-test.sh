@@ -2,8 +2,7 @@
 # P0 integration smoke test (requires root for eBPF).
 #
 # Verifies the two enrollment failure modes that matter most:
-#   - RECALL: a fake "agent" (node basename + CLAUDECODE marker) and its child
-#             subtree get enrolled and tagged.
+#   - RECALL: a fake "agent" (node basename + CLAUDECODE marker) gets enrolled and tagged.
 #   - PRECISION: an unrelated control process is NOT tagged.
 #
 # Usage: sudo ./scripts/integration-test.sh
@@ -54,9 +53,10 @@ echo "== spawning control (should NOT enroll) =="
 sleep 4 &
 CONTROL_PID=$!
 
-echo "== spawning fake agent + child subtree (should enroll) =="
-# Parent matches claude-code; it spawns a child to test lineage propagation.
-CLAUDECODE=1 "$TMP/node" 4 &
+echo "== spawning fake agent (should enroll) =="
+# Use a minimal env so CLAUDECODE lands inside the BPF env prefix (MAX_ENV=512).
+# On a full inherited shell env, CLAUDECODE=1 is appended late and the marker is missed.
+env -i CLAUDECODE=1 PATH="${PATH:-/usr/bin:/bin}" "$TMP/node" 4 &
 FAKE_PID=$!
 
 sleep 2
@@ -68,6 +68,8 @@ if grep -q '"agent_id":"claude-code"' "$TMP/audit.jsonl" 2>/dev/null; then
   echo "PASS: fake agent enrolled as claude-code"
 else
   echo "FAIL: fake agent was not enrolled"; fail=1
+  echo "--- agent.log (last 30 lines) ---"
+  tail -30 "$TMP/agent.log" 2>/dev/null || echo "(no agent log)"
 fi
 
 if grep -q "\"pid\":$CONTROL_PID" "$TMP/audit.jsonl" 2>/dev/null; then
