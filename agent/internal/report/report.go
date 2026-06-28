@@ -68,6 +68,21 @@ func (r *Reporter) Emit(rec Record) {
 	}
 }
 
+// EmitAuditOnly writes one JSONL record to the audit log without stdout.
+func (r *Reporter) EmitAuditOnly(rec Record) {
+	if r.audit == nil {
+		return
+	}
+	if rec.Time.IsZero() {
+		rec.Time = time.Now()
+	}
+	jsonLine := jsonBytes(rec)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.audit.Write(jsonLine)
+	r.audit.Write([]byte{'\n'})
+}
+
 func (r *Reporter) render(rec Record) string {
 	if r.format == "json" {
 		return string(jsonBytes(rec))

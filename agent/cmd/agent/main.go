@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -44,8 +45,8 @@ func main() {
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		// Logger not up yet; use a default one.
-		logging.Setup("info", "text").Error("loading config", "err", err)
+		log, _ := logging.Setup("info", "text", "")
+		log.Error("loading config", "err", err)
 		os.Exit(1)
 	}
 	if *debug {
@@ -59,8 +60,16 @@ func main() {
 		cfg.LogFormat = *logFormat
 	}
 
-	log := logging.Setup(cfg.LogLevel, cfg.LogFormat)
+	log, err := logging.Setup(cfg.LogLevel, cfg.LogFormat, cfg.LogFile)
+	if err != nil {
+		fallback, _ := logging.Setup("info", "text", "")
+		fallback.Error("setup logging", "err", err)
+		os.Exit(1)
+	}
 	log.Info("starting ebpf-ai-blocker P0 agent", "mode_a", cfg.ModeA.Enabled, "mode_b", cfg.ModeB.Enabled)
+	if cfg.LogFile != "" {
+		log.Info("slog output also written to log_file", "path", cfg.LogFile)
+	}
 
 	// Load Mode B fingerprints.
 	var fps *fingerprint.Set
@@ -93,7 +102,6 @@ func main() {
 		log.Error("opening ringbuf", "err", err)
 		os.Exit(1)
 	}
-	defer reader.Close()
 
 	// Build the pipeline.
 	rep, err := report.New(cfg.Report.Format, cfg.Report.AuditLog)
@@ -102,6 +110,11 @@ func main() {
 		os.Exit(1)
 	}
 	defer rep.Close()
+
+	if cfg.Report.AuditLog != "" {
+		log.Info("audit log enabled (tagged enroll/events only; debug traces stay in slog)", "path", cfg.Report.AuditLog)
+		rep.EmitAuditOnly(report.Record{Event: "session_start"})
+	}
 
 	tbl := proctable.New()
 	eng := enroll.New(cfg, enricher.New(), fps, tbl, rep, log)
@@ -121,24 +134,33 @@ func main() {
 
 	go backgroundTasks(ctx, eng, loader, tbl, cfg, log)
 
-	// Closing the reader on ctx cancel unblocks Read().
+	var closeReader sync.Once
+	closeRingbuf := func() {
+		closeReader.Do(func() {
+			_ = reader.Close()
+		})
+	}
+	defer closeRingbuf()
+
 	go func() {
 		<-ctx.Done()
 		log.Info("shutting down")
-		_ = reader.Close()
+		closeRingbuf()
 	}()
 
 	log.Info("observing (press Ctrl-C to stop)")
-	consume(reader, eng, log)
+	consume(ctx, reader, eng, log)
 }
 
-// consume reads ringbuf records until the reader is closed.
-func consume(reader *cringbuf.Reader, eng *enroll.Engine, log *slog.Logger) {
+// consume reads ringbuf records until shutdown or the reader is closed.
+func consume(ctx context.Context, reader *cringbuf.Reader, eng *enroll.Engine, log *slog.Logger) {
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		rec, err := reader.Read()
 		if err != nil {
-			// Close() returns fmt.Errorf("ringbuffer: %w", os.ErrClosed), not bare ErrClosed.
-			if errors.Is(err, cringbuf.ErrClosed) {
+			if ctx.Err() != nil || isRingbufClosed(err) {
 				return
 			}
 			log.Warn("ringbuf read", "err", err)
@@ -151,6 +173,10 @@ func consume(reader *cringbuf.Reader, eng *enroll.Engine, log *slog.Logger) {
 		}
 		eng.Handle(ev)
 	}
+}
+
+func isRingbufClosed(err error) bool {
+	return errors.Is(err, cringbuf.ErrClosed) || errors.Is(err, os.ErrClosed)
 }
 
 // backgroundTasks runs the periodic snapshot report and proctable pruning.

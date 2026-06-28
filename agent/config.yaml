@@ -2,6 +2,7 @@
 
 log_level: info   # debug|info|warn|error
 log_format: text  # text|json
+log_file: ""      # optional; duplicates slog (startup, debug, snapshots) to this path
 
 # Mode A: controlled-spawn enrollment. Any process whose cgroup-v2 path contains
 # one of these substrings is enrolled as an AI agent. Launch your agents under a

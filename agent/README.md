@@ -51,7 +51,10 @@ block is an AND of `interpreter_basename` / `interpreter_path` / `argv_contains`
 
 - **stdout** — one line per tagged event (`text`) or JSON (`json`). Enrollment
   decisions are prefixed `ENROLL`.
-- **audit log** — append-only JSONL when `report.audit_log` is set.
+- **stderr (slog)** — startup, snapshots, warnings, and with `--debug` the
+  fingerprint match trace. Set `log_file` to duplicate slog to a file.
+- **audit log** — append-only JSONL when `report.audit_log` is set. Only tagged
+  enroll/exec/fork/exit records (not debug traces).
 - **snapshot** — periodic per-agent counters in the logs (`report.snapshot_sec`).
 
 ## Debug mode

@@ -13,6 +13,7 @@ import (
 type Config struct {
 	LogLevel  string       `yaml:"log_level"`  // debug|info|warn|error
 	LogFormat string       `yaml:"log_format"` // text|json
+	LogFile   string       `yaml:"log_file"`   // optional; duplicates slog to this path
 	ModeA     ModeAConfig  `yaml:"mode_a"`
 	ModeB     ModeBConfig  `yaml:"mode_b"`
 	Report    ReportConfig `yaml:"report"`
