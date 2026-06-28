@@ -101,8 +101,14 @@ func (s *Set) Evaluate(obj Observation) Result {
 }
 
 func matches(m Match, base string, obj Observation, envSet map[string]struct{}) (bool, string) {
-	if m.InterpreterPath != "" && m.InterpreterPath != obj.BinaryPath {
-		return false, fmt.Sprintf("interpreter_path %q != %q", m.InterpreterPath, obj.BinaryPath)
+	if m.InterpreterPath != "" {
+		if strings.Contains(m.InterpreterPath, "*") {
+			if !wildcardMatch(m.InterpreterPath, obj.BinaryPath) {
+				return false, fmt.Sprintf("interpreter_path glob %q != %q", m.InterpreterPath, obj.BinaryPath)
+			}
+		} else if m.InterpreterPath != obj.BinaryPath {
+			return false, fmt.Sprintf("interpreter_path %q != %q", m.InterpreterPath, obj.BinaryPath)
+		}
 	}
 	if m.InterpreterBasename != "" && m.InterpreterBasename != base {
 		return false, fmt.Sprintf("interpreter_basename %q != %q", m.InterpreterBasename, base)

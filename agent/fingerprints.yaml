@@ -2,7 +2,7 @@
 # signatures, matched at exec time. Each entry's `match` block is an AND of all
 # non-empty conditions:
 #   interpreter_basename : basename of the resolved binary (e.g. "node")
-#   interpreter_path     : exact resolved binary path (compiled agents)
+#   interpreter_path     : exact resolved binary path, or glob if '*' is present
 #   argv_contains        : every glob must match at least one argv element
 #   env_markers.any_of   : at least one of these env var NAMES must be present
 #
@@ -25,6 +25,22 @@ fingerprints:
         any_of:
           - CLAUDECODE
           - CLAUDE_CODE_ENTRYPOINT
+
+  # Native Claude Code CLI (Bun-compiled; installs to ~/.local/bin/claude and
+  # ~/.local/share/claude/versions/<ver>). Does not run as node + CLAUDECODE.
+  - id: claude-code-native
+    agent_id: claude-code
+    identity_class: compiled
+    confidence: high
+    match:
+      interpreter_basename: claude
+
+  - id: claude-code-versioned
+    agent_id: claude-code
+    identity_class: compiled
+    confidence: high
+    match:
+      interpreter_path: "*/.local/share/claude/versions/*"
 
   - id: cursor-agent
     agent_id: cursor

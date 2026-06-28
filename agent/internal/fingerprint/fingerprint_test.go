@@ -55,6 +55,34 @@ func TestMatchArgvGlob(t *testing.T) {
 	}
 }
 
+func TestMatchCompiledByPathGlob(t *testing.T) {
+	s := &Set{Fingerprints: []Fingerprint{{
+		ID: "claude-code-versioned", AgentID: "claude-code",
+		Match: Match{InterpreterPath: "*/.local/share/claude/versions/*"},
+	}}}
+	res := s.Evaluate(Observation{
+		BinaryPath: "/root/.local/share/claude/versions/2.1.195",
+		Argv:       []string{"rg", "--version"},
+	})
+	if !res.Matched || res.Fingerprint.ID != "claude-code-versioned" {
+		t.Fatalf("expected versioned claude match, got matched=%v trace=%v", res.Matched, res.Trace)
+	}
+}
+
+func TestMatchNativeClaudeBasename(t *testing.T) {
+	s := &Set{Fingerprints: []Fingerprint{{
+		ID: "claude-code-native", AgentID: "claude-code",
+		Match: Match{InterpreterBasename: "claude"},
+	}}}
+	res := s.Evaluate(Observation{
+		BinaryPath: "/root/.local/bin/claude",
+		Argv:       []string{"claude"},
+	})
+	if !res.Matched || res.Fingerprint.ID != "claude-code-native" {
+		t.Fatalf("expected native claude match, got matched=%v trace=%v", res.Matched, res.Trace)
+	}
+}
+
 func TestMatchCompiledByPath(t *testing.T) {
 	s := testSet()
 	res := s.Evaluate(Observation{BinaryPath: "/opt/bot/agent", Argv: []string{"agent"}})
