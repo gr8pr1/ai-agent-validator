@@ -49,6 +49,12 @@ echo "== starting agent =="
 AGENT_PID=$!
 sleep 1.5
 
+if ! kill -0 "$AGENT_PID" 2>/dev/null; then
+  echo "FAIL: agent exited during startup (BPF load/attach failed?)"
+  cat "$TMP/agent.log"
+  exit 1
+fi
+
 echo "== spawning control (should NOT enroll) =="
 sleep 4 &
 CONTROL_PID=$!
