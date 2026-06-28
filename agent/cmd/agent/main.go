@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"flag"
 	"log/slog"
 	"os"
@@ -136,7 +137,8 @@ func consume(reader *cringbuf.Reader, eng *enroll.Engine, log *slog.Logger) {
 	for {
 		rec, err := reader.Read()
 		if err != nil {
-			if err == cringbuf.ErrClosed {
+			// Close() returns fmt.Errorf("ringbuffer: %w", os.ErrClosed), not bare ErrClosed.
+			if errors.Is(err, cringbuf.ErrClosed) {
 				return
 			}
 			log.Warn("ringbuf read", "err", err)
