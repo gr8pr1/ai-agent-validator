@@ -1,0 +1,48 @@
+# Mode B fingerprint set: the operator-maintained list of known AI-agent
+# signatures, matched at exec time. Each entry's `match` block is an AND of all
+# non-empty conditions:
+#   interpreter_basename : basename of the resolved binary (e.g. "node")
+#   interpreter_path     : exact resolved binary path (compiled agents)
+#   argv_contains        : every glob must match at least one argv element
+#   env_markers.any_of   : at least one of these env var NAMES must be present
+#
+# For interpreted agents (Claude Code, Cursor) the kernel-visible binary is the
+# interpreter (node), so argv + env markers are the real discriminators. For
+# compiled agents, interpreter_path is the strong signal.
+#
+# NOTE: argv/env are captured as a bounded prefix; a marker past the window is
+# missed, so keep markers early/unique. These globs/markers are best-effort
+# starting points - verify against your environment before relying on them.
+
+fingerprints:
+  - id: claude-code
+    agent_id: claude-code
+    identity_class: interpreted
+    confidence: high
+    match:
+      interpreter_basename: node
+      env_markers:
+        any_of:
+          - CLAUDECODE
+          - CLAUDE_CODE_ENTRYPOINT
+
+  - id: cursor-agent
+    agent_id: cursor
+    identity_class: interpreted
+    confidence: high
+    match:
+      interpreter_basename: node
+      env_markers:
+        any_of:
+          - CURSOR_AGENT
+          - CURSOR_TRACE_ID
+
+  - id: aider
+    agent_id: aider
+    identity_class: interpreted
+    confidence: low
+    match:
+      interpreter_basename: python3
+      argv_contains:
+        - "*/aider"
+        - "*/aider/__main__.py"

@@ -183,6 +183,38 @@ tradeoff (unavoidable): you can't have *transparent + zero-list + reliable* simu
 
 - **Interface out:** `agent_id` tag per in-scope process; untagged processes are ignored.
 
+#### 5.1.2 Fingerprint authoring & distribution (Mode B)
+A fingerprint is **data, not code** — an entry the loader pushes into the match set, shipped as a
+signed, versioned pack (same plumbing as policy) and hot-reloadable. Each entry's `match` block is
+the **AND** of all non-empty conditions:
+
+```yaml
+- id: claude-code
+  agent_id: claude-code
+  identity_class: interpreted     # interpreted | compiled
+  confidence: high
+  match:
+    interpreter_basename: node    # basename of the resolved binary
+    interpreter_path: ""          # exact resolved path (strong signal for compiled agents)
+    argv_contains: ["*/cli.js"]   # every glob must match an argv element ('*' spans any chars)
+    env_markers: { any_of: [CLAUDECODE, CLAUDE_CODE_ENTRYPOINT] }  # >=1 env var NAME present
+```
+
+The decisive subtlety: most agents are **interpreted** (Claude Code, Cursor run as `node`), so the
+kernel-visible binary is the interpreter and the real discriminators are `argv` + `env_markers`;
+`interpreter_path` is the strong signal only for **compiled** agents. argv/env are read as a
+**bounded prefix** (§5.1.1), so markers must be early and unique, and a bare common name (`node`)
+is never sufficient alone. Distribution is two-tier: a **curated community pack** for well-known
+agents (the main contribution surface) plus **local entries** for in-house agents. Onboarding a
+new agent is observe → derive a stable/unique tuple → shadow-test recall (whole subtree tagged) and
+precision (no unrelated process tagged) → ship.
+
+> **P0 implementation note.** v1's first milestone is a **self-contained agent** (it ports the
+> `ebpf-host-monitor` patterns rather than importing them). In P0, enrollment and fingerprint
+> matching run in **userspace** off the exec/fork/exit event stream, and the `agent_id` tag is held
+> in a userspace process table; the **in-kernel tag map** (needed to key fast LSM enforcement)
+> arrives with enforcement in P3. P0 is observe-only.
+
 ### 5.2 Observation layer
 - **What:** eBPF programs + userspace enricher producing a structured event stream of tagged
   agent actions (exec, file, network, privilege, lifecycle).

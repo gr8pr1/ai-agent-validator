@@ -1,0 +1,75 @@
+package fingerprint
+
+import "testing"
+
+func testSet() *Set {
+	return &Set{Fingerprints: []Fingerprint{
+		{
+			ID: "claude-code", AgentID: "claude-code", IdentityClass: "interpreted",
+			Match: Match{InterpreterBasename: "node", EnvMarkers: Markers{AnyOf: []string{"CLAUDECODE"}}},
+		},
+		{
+			ID: "aider", AgentID: "aider", IdentityClass: "interpreted",
+			Match: Match{InterpreterBasename: "python3", ArgvContains: []string{"*/aider"}},
+		},
+		{
+			ID: "compiled-bot", AgentID: "bot", IdentityClass: "compiled",
+			Match: Match{InterpreterPath: "/opt/bot/agent"},
+		},
+	}}
+}
+
+func TestMatchInterpretedByEnvMarker(t *testing.T) {
+	s := testSet()
+	res := s.Evaluate(Observation{
+		BinaryPath: "/usr/bin/node",
+		Argv:       []string{"node", "/opt/claude/cli.js"},
+		EnvKeys:    []string{"PATH", "CLAUDECODE"},
+	})
+	if !res.Matched || res.Fingerprint.AgentID != "claude-code" {
+		t.Fatalf("expected claude-code match, got %+v trace=%v", res.Matched, res.Trace)
+	}
+}
+
+func TestNoMatchBareNode(t *testing.T) {
+	// A plain node process without the marker must NOT match (FP guard).
+	s := testSet()
+	res := s.Evaluate(Observation{
+		BinaryPath: "/usr/bin/node",
+		Argv:       []string{"node", "server.js"},
+		EnvKeys:    []string{"PATH", "HOME"},
+	})
+	if res.Matched {
+		t.Fatalf("bare node should not match, got %s", res.Fingerprint.AgentID)
+	}
+}
+
+func TestMatchArgvGlob(t *testing.T) {
+	s := testSet()
+	res := s.Evaluate(Observation{
+		BinaryPath: "/usr/bin/python3",
+		Argv:       []string{"python3", "/usr/local/bin/aider", "--model"},
+	})
+	if !res.Matched || res.Fingerprint.AgentID != "aider" {
+		t.Fatalf("expected aider match, got matched=%v trace=%v", res.Matched, res.Trace)
+	}
+}
+
+func TestMatchCompiledByPath(t *testing.T) {
+	s := testSet()
+	res := s.Evaluate(Observation{BinaryPath: "/opt/bot/agent", Argv: []string{"agent"}})
+	if !res.Matched || res.Fingerprint.AgentID != "bot" {
+		t.Fatalf("expected bot match, got matched=%v", res.Matched)
+	}
+}
+
+func TestTracePopulatedOnMiss(t *testing.T) {
+	s := testSet()
+	res := s.Evaluate(Observation{BinaryPath: "/bin/ls", Argv: []string{"ls"}})
+	if res.Matched {
+		t.Fatal("ls should not match")
+	}
+	if len(res.Trace) != len(s.Fingerprints) {
+		t.Fatalf("expected a trace entry per fingerprint, got %d", len(res.Trace))
+	}
+}

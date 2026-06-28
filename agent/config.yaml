@@ -1,0 +1,28 @@
+# ebpf-ai-blocker P0 agent configuration.
+
+log_level: info   # debug|info|warn|error
+log_format: text  # text|json
+
+# Mode A: controlled-spawn enrollment. Any process whose cgroup-v2 path contains
+# one of these substrings is enrolled as an AI agent. Launch your agents under a
+# dedicated slice (e.g. systemd Slice=ai-agents.slice) to use this.
+mode_a:
+  enabled: true
+  cgroup_contains:
+    - "ai-agents.slice"
+  default_agent_id: "agent"
+
+# Mode B: exec-time fingerprint enrollment against the fingerprint set.
+mode_b:
+  enabled: true
+  fingerprints_path: "fingerprints.yaml"
+
+report:
+  format: "text"     # text|json
+  audit_log: ""      # path to an append-only JSONL audit log; empty disables
+  all_events: false  # also report untagged exec events (very noisy)
+  snapshot_sec: 30   # periodic snapshot interval in seconds; 0 disables
+
+debug:
+  enabled: false
+  http_addr: "127.0.0.1:9230"
