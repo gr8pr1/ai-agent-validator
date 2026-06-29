@@ -12,6 +12,10 @@ type AgentStat struct {
 	Exec      uint64    `json:"exec"`
 	Fork      uint64    `json:"fork"`
 	Exit      uint64    `json:"exit"`
+	Connect   uint64    `json:"connect"`
+	Open      uint64    `json:"open"`
+	Unlink    uint64    `json:"unlink"`
+	Rename    uint64    `json:"rename"`
 	FirstSeen time.Time `json:"first_seen"`
 	LastSeen  time.Time `json:"last_seen"`
 }
@@ -48,6 +52,14 @@ func (s *Stats) count(kind, agentID string) {
 		a.Fork++
 	case "exit":
 		a.Exit++
+	case "connect":
+		a.Connect++
+	case "open":
+		a.Open++
+	case "unlink":
+		a.Unlink++
+	case "rename":
+		a.Rename++
 	}
 }
 

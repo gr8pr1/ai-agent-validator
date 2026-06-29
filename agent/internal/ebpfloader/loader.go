@@ -1,5 +1,6 @@
 // Package ebpfloader loads the embedded enrollment BPF object, attaches the
-// process-lifecycle tracepoints, and exposes the ringbuf and drop counters.
+// process-lifecycle and action tracepoints, and exposes the ringbuf, tag map,
+// and drop counters.
 package ebpfloader
 
 import (
@@ -23,6 +24,10 @@ var tracepoints = []tracepoint{
 	{"sched", "sched_process_exec", "handle_exec"},
 	{"sched", "sched_process_fork", "handle_fork"},
 	{"sched", "sched_process_exit", "handle_exit"},
+	{"syscalls", "sys_enter_connect", "handle_connect"},
+	{"syscalls", "sys_enter_openat", "handle_openat"},
+	{"syscalls", "sys_enter_unlinkat", "handle_unlinkat"},
+	{"syscalls", "sys_enter_renameat2", "handle_renameat2"},
 }
 
 // Loader owns the loaded collection, attached links, and ringbuf reader.
@@ -72,6 +77,25 @@ func (l *Loader) Reader() (*cringbuf.Reader, error) {
 		return nil, fmt.Errorf("events map not found")
 	}
 	return cringbuf.NewReader(m)
+}
+
+// TagPID marks pid in the advisory kernel tag map.
+func (l *Loader) TagPID(pid uint32) error {
+	m, ok := l.coll.Maps["tagged_pids"]
+	if !ok {
+		return fmt.Errorf("tagged_pids map not found")
+	}
+	v := uint8(1)
+	return m.Put(pid, v)
+}
+
+// UntagPID removes pid from the advisory kernel tag map.
+func (l *Loader) UntagPID(pid uint32) error {
+	m, ok := l.coll.Maps["tagged_pids"]
+	if !ok {
+		return fmt.Errorf("tagged_pids map not found")
+	}
+	return m.Delete(pid)
 }
 
 // Drops returns the total number of records the kernel dropped (ringbuf full).

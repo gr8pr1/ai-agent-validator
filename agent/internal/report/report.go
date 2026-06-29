@@ -16,7 +16,7 @@ import (
 // Record is one reportable observation.
 type Record struct {
 	Time     time.Time `json:"time"`
-	Event    string    `json:"event"` // exec|fork|exit
+	Event    string    `json:"event"` // exec|fork|exit|connect|open|unlink|rename
 	Enrolled bool      `json:"enrolled,omitempty"`
 	PID      uint32    `json:"pid"`
 	PPID     uint32    `json:"ppid,omitempty"`
@@ -27,6 +27,11 @@ type Record struct {
 	Comm     string    `json:"comm,omitempty"`
 	Binary   string    `json:"binary,omitempty"`
 	Argv     []string  `json:"argv,omitempty"`
+	Dest     string    `json:"dest,omitempty"`
+	DestPort uint16    `json:"dest_port,omitempty"`
+	Path     string    `json:"path,omitempty"`
+	NewPath  string    `json:"new_path,omitempty"`
+	Write    bool      `json:"write,omitempty"`
 }
 
 // Reporter fans a Record out to stdout and an optional audit-log file.
@@ -109,6 +114,18 @@ func (r *Reporter) render(rec Record) string {
 	}
 	if rec.Reason != "" {
 		fmt.Fprintf(&b, " reason=%q", rec.Reason)
+	}
+	if rec.Dest != "" {
+		fmt.Fprintf(&b, " dest=%s:%d", rec.Dest, rec.DestPort)
+	}
+	if rec.Path != "" {
+		fmt.Fprintf(&b, " path=%s", rec.Path)
+	}
+	if rec.NewPath != "" {
+		fmt.Fprintf(&b, " new_path=%s", rec.NewPath)
+	}
+	if rec.Write {
+		b.WriteString(" write=true")
 	}
 	return b.String()
 }

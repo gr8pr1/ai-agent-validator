@@ -31,6 +31,29 @@ func buildExec(pid, ppid uint32, comm, filename string, argv, env []string) []by
 	return b
 }
 
+func buildAction(typ uint8, pid uint32, detail []byte, path, path2 string) []byte {
+	b := make([]byte, ActionRecordSize)
+	binary.LittleEndian.PutUint64(b[0:8], 111)
+	binary.LittleEndian.PutUint64(b[8:16], 222)
+	binary.LittleEndian.PutUint32(b[24:28], pid)
+	b[36] = typ
+	copy(b[44:60], "node")
+	if len(detail) > 0 {
+		copy(b[actionDetailOff:actionDetailOff+ActionDetailSize], detail)
+	}
+	if path != "" {
+		p := []byte(path)
+		copy(b[actionPathOff:], p)
+		binary.LittleEndian.PutUint16(b[38:40], uint16(len(p)))
+	}
+	if path2 != "" {
+		p := []byte(path2)
+		copy(b[actionPath2Off:], p)
+		binary.LittleEndian.PutUint16(b[40:42], uint16(len(p)))
+	}
+	return b
+}
+
 func joinNul(items []string) []byte {
 	var out []byte
 	for _, s := range items {
@@ -79,6 +102,76 @@ func TestParseHeaderOnly(t *testing.T) {
 	}
 	if e.Argv != nil || e.Env != nil || e.Filename != "" {
 		t.Fatalf("header-only record should have no tail: %+v", e)
+	}
+}
+
+func TestParseConnect(t *testing.T) {
+	detail := make([]byte, ActionDetailSize)
+	detail[0] = AFINET
+	binary.LittleEndian.PutUint16(detail[2:4], 9)
+	detail[8] = 127
+	detail[11] = 1
+
+	rec := buildAction(TypeConnect, 55, detail, "", "")
+	e, err := Parse(rec)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if e.Type != TypeConnect || e.PID != 55 {
+		t.Fatalf("connect header: %+v", e)
+	}
+	if e.DestIP != "127.0.0.1" || e.DestPort != 9 {
+		t.Fatalf("dest mismatch: ip=%q port=%d", e.DestIP, e.DestPort)
+	}
+}
+
+func TestParseOpen(t *testing.T) {
+	detail := make([]byte, ActionDetailSize)
+	binary.LittleEndian.PutUint32(detail[4:8], oWRONLY|oCREAT)
+	rec := buildAction(TypeOpen, 77, detail, "/tmp/w.txt", "")
+	e, err := Parse(rec)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if e.Type != TypeOpen || e.Path != "/tmp/w.txt" {
+		t.Fatalf("open parse: %+v", e)
+	}
+	if !IsOpenWriteIntent(e.OpenFlags) {
+		t.Fatalf("expected write intent for flags %#x", e.OpenFlags)
+	}
+}
+
+func TestParseUnlink(t *testing.T) {
+	rec := buildAction(TypeUnlink, 88, nil, "/tmp/del.txt", "")
+	e, err := Parse(rec)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if e.Type != TypeUnlink || e.Path != "/tmp/del.txt" {
+		t.Fatalf("unlink parse: %+v", e)
+	}
+}
+
+func TestParseRename(t *testing.T) {
+	rec := buildAction(TypeRename, 99, nil, "/tmp/a.txt", "/tmp/b.txt")
+	e, err := Parse(rec)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if e.Type != TypeRename || e.Path != "/tmp/a.txt" || e.Path2 != "/tmp/b.txt" {
+		t.Fatalf("rename parse: %+v", e)
+	}
+}
+
+func TestIsOpenWriteIntent(t *testing.T) {
+	if IsOpenWriteIntent(0) {
+		t.Fatal("O_RDONLY should not be write intent")
+	}
+	if !IsOpenWriteIntent(oWRONLY) {
+		t.Fatal("O_WRONLY should be write intent")
+	}
+	if !IsOpenWriteIntent(oCREAT) {
+		t.Fatal("O_CREAT should be write intent")
 	}
 }
 

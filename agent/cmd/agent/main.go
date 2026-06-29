@@ -117,7 +117,7 @@ func main() {
 	}
 
 	tbl := proctable.New()
-	eng := enroll.New(cfg, enricher.New(), fps, tbl, rep, log)
+	eng := enroll.New(cfg, enricher.New(), fps, tbl, rep, loader, log)
 
 	// Signals + lifecycle.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -201,7 +201,8 @@ func backgroundTasks(ctx context.Context, eng *enroll.Engine, loader *ebpfloader
 				"total_events", total, "enrollments", enrollments,
 				"tagged_agents", len(agents), "tracked_pids", tbl.Len(), "ringbuf_drops", drops)
 			for _, a := range agents {
-				log.Info("agent", "id", a.AgentID, "exec", a.Exec, "fork", a.Fork, "exit", a.Exit)
+				log.Info("agent", "id", a.AgentID, "exec", a.Exec, "fork", a.Fork, "exit", a.Exit,
+					"connect", a.Connect, "open", a.Open, "unlink", a.Unlink, "rename", a.Rename)
 			}
 		case <-prune.C:
 			tbl.Prune(2 * time.Minute)

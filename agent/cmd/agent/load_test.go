@@ -29,8 +29,8 @@ func TestBPFLoadAndAttach(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attach tracepoints: %v", err)
 	}
-	if len(attached) != 3 {
-		t.Fatalf("expected 3 tracepoints attached, got %d: %v", len(attached), attached)
+	if len(attached) != 7 {
+		t.Fatalf("expected 7 tracepoints attached, got %d: %v", len(attached), attached)
 	}
 
 	if _, err := loader.Reader(); err != nil {

@@ -11,13 +11,14 @@ import (
 
 // Config is the top-level agent configuration.
 type Config struct {
-	LogLevel  string       `yaml:"log_level"`  // debug|info|warn|error
-	LogFormat string       `yaml:"log_format"` // text|json
-	LogFile   string       `yaml:"log_file"`   // optional; duplicates slog to this path
-	ModeA     ModeAConfig  `yaml:"mode_a"`
-	ModeB     ModeBConfig  `yaml:"mode_b"`
-	Report    ReportConfig `yaml:"report"`
-	Debug     DebugConfig  `yaml:"debug"`
+	LogLevel  string        `yaml:"log_level"`  // debug|info|warn|error
+	LogFormat string        `yaml:"log_format"` // text|json
+	LogFile   string        `yaml:"log_file"`   // optional; duplicates slog to this path
+	ModeA     ModeAConfig   `yaml:"mode_a"`
+	ModeB     ModeBConfig   `yaml:"mode_b"`
+	Actions   ActionsConfig `yaml:"actions"`
+	Report    ReportConfig  `yaml:"report"`
+	Debug     DebugConfig   `yaml:"debug"`
 }
 
 // ModeAConfig controls controlled-spawn cgroup enrollment.
@@ -31,6 +32,26 @@ type ModeAConfig struct {
 type ModeBConfig struct {
 	Enabled          bool   `yaml:"enabled"`
 	FingerprintsPath string `yaml:"fingerprints_path"`
+}
+
+// ActionsConfig controls per-agent file/network action capture.
+type ActionsConfig struct {
+	Enabled        bool     `yaml:"enabled"`
+	Capture        []string `yaml:"capture"`          // connect|open|unlink|rename
+	OpenWritesOnly bool     `yaml:"open_writes_only"` // report only write-intent opens
+}
+
+// CaptureEnabled reports whether an action type is enabled.
+func (a ActionsConfig) CaptureEnabled(name string) bool {
+	if len(a.Capture) == 0 {
+		return true
+	}
+	for _, c := range a.Capture {
+		if c == name {
+			return true
+		}
+	}
+	return false
 }
 
 // ReportConfig controls the observation/enrollment output.
@@ -60,6 +81,11 @@ func Default() Config {
 		ModeB: ModeBConfig{
 			Enabled:          true,
 			FingerprintsPath: "fingerprints.yaml",
+		},
+		Actions: ActionsConfig{
+			Enabled:        true,
+			Capture:        []string{"connect", "open", "unlink", "rename"},
+			OpenWritesOnly: true,
 		},
 		Report: ReportConfig{
 			Format:      "text",

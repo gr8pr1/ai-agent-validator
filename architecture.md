@@ -212,8 +212,10 @@ precision (no unrelated process tagged) → ship.
 > **P0 implementation note.** v1's first milestone is a **self-contained agent** (it ports the
 > `ebpf-host-monitor` patterns rather than importing them). In P0, enrollment and fingerprint
 > matching run in **userspace** off the exec/fork/exit event stream, and the `agent_id` tag is held
-> in a userspace process table; the **in-kernel tag map** (needed to key fast LSM enforcement)
-> arrives with enforcement in P3. P0 is observe-only.
+> in a userspace process table. **P0.5** adds an **advisory, observation-only** in-kernel
+> `tagged_pids` map (written by the enrollment engine, not the policy loader) to pre-filter action
+> tracepoints; the proctable remains the source of truth for attribution. The **enforcement** tag
+> map (needed to key fast LSM hooks) still arrives with P3. P0/P0.5 are observe-only.
 
 ### 5.2 Observation layer
 - **What:** eBPF programs + userspace enricher producing a structured event stream of tagged
@@ -221,9 +223,15 @@ precision (no unrelated process tagged) → ship.
 - **Source:** reuse `ebpf-host-monitor` (§4). Observation is via **tracepoints** — they watch,
   they cannot block (blocking is §5.5/§9).
 - **Command capture (P0):** rules match on command *arguments* (which URL/path/flags), not just
-  the binary. Capture argv at `sys_enter_execve`/`execveat` via a bounded `bpf_probe_read_user`
-  scan (a **bounded prefix** of argv; userspace re-resolves full paths). The monitor captures
-  `comm` + exec filename today but not full argv — this project requires it.
+  the binary. Capture argv at **`sched_process_exec`** via a bounded `bpf_probe_read_user` scan
+  of `mm->arg_start`/`arg_end` (a **bounded prefix** of argv; userspace re-resolves full paths).
+  The monitor captures `comm` + exec filename today but not full argv — this project requires it.
+- **Action capture (P0.5):** for enrolled agents only, capture **connect** (dest IP/port via
+  `sys_enter_connect`), **open** (path + flags via `sys_enter_openat`; open-for-write flags stand
+  in for write intent), **unlink** (`sys_enter_unlinkat`), and **rename** (`sys_enter_renameat2`).
+  Raw `sys_enter_write` is intentionally omitted (fd-only, no path, very high volume); true write
+  enforcement uses LSM `file_permission` in P3. Action events are gated by an advisory in-kernel
+  `tagged_pids` map; userspace re-checks every event against the proctable before reporting.
 - **Interface out:** enriched, `agent_id`-tagged event records.
 
 ### 5.3 Policy model (defined & set)
@@ -612,7 +620,8 @@ policy plumbing are solid.
 
 | Phase | Deliverable | Reuses | New |
 |---|---|---|---|
-| **P0 — Enroll & observe** | Hybrid enrollment (Mode A cgroup + Mode B exec fingerprint); per-`agent_id` action stream; **argv capture** | `ebpf-host-monitor` | enrollment/attribution (§5.1), `agent_id` tag map, argv |
+| **P0 — Enroll & observe** | Hybrid enrollment (Mode A cgroup + Mode B exec fingerprint); per-`agent_id` lifecycle stream; **argv capture** | `ebpf-host-monitor` | enrollment/attribution (§5.1), userspace proctable, argv |
+| **P0.5 — Action capture** | Per-agent connect/open/unlink/rename action stream; advisory in-kernel tag map for pre-filter | P0 agent | action tracepoints (§5.2), integration tests |
 | **P1 — Policy model + loader** | Policy schema (§8); signed bundle; trusted loader (local file source; pluggable for fleet); compile to BPF maps; version history + rollback | SQLite pattern | policy compiler/loader (§5.4) |
 | **P2 — Shadow mode** | Load rules log-only; "would have blocked" reporting against live traffic | OTLP audit | shadow evaluation, policy lifecycle (§7) |
 | **P3 — Enforce** | LSM + cgroup-BPF (§9); **deny-only** (`-EPERM`) for file/exec/network/privilege | — | enforcer (§5.5) |
