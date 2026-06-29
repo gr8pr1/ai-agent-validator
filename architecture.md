@@ -620,8 +620,8 @@ policy plumbing are solid.
 
 | Phase | Deliverable | Reuses | New |
 |---|---|---|---|
-| **P0 — Enroll & observe** | Hybrid enrollment (Mode A cgroup + Mode B exec fingerprint); per-`agent_id` lifecycle stream; **argv capture** | `ebpf-host-monitor` | enrollment/attribution (§5.1), userspace proctable, argv |
-| **P0.5 — Action capture** | Per-agent connect/open/unlink/rename action stream; advisory in-kernel tag map for pre-filter | P0 agent | action tracepoints (§5.2), integration tests |
+| **P0 — Enroll & observe** *(implemented)* | Hybrid enrollment (Mode A cgroup + Mode B exec fingerprint); per-`agent_id` lifecycle stream; **argv capture** | `ebpf-host-monitor` | enrollment/attribution (§5.1), userspace proctable, argv |
+| **P0.5 — Action capture** *(implemented)* | Per-agent connect/open/unlink/rename action stream; advisory in-kernel tag map for pre-filter | P0 agent | action tracepoints (§5.2), integration tests. Config: [agent/config.md](agent/config.md) |
 | **P1 — Policy model + loader** | Policy schema (§8); signed bundle; trusted loader (local file source; pluggable for fleet); compile to BPF maps; version history + rollback | SQLite pattern | policy compiler/loader (§5.4) |
 | **P2 — Shadow mode** | Load rules log-only; "would have blocked" reporting against live traffic | OTLP audit | shadow evaluation, policy lifecycle (§7) |
 | **P3 — Enforce** | LSM + cgroup-BPF (§9); **deny-only** (`-EPERM`) for file/exec/network/privilege | — | enforcer (§5.5) |

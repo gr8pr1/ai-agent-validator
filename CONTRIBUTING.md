@@ -26,10 +26,10 @@ sudo ./scripts/integration-test.sh
 
 ## Contributing a fingerprint (Mode B)
 
-Fingerprints are data in [`agent/fingerprints.yaml`](agent/fingerprints.yaml), not
-code. To add support for a new agent:
+Fingerprints are data in [`agent/fingerprints.yaml.example`](agent/fingerprints.yaml.example),
+not code. Copy to `fingerprints.yaml` (or set `mode_b.fingerprints_path`) before running. To add support for a new agent:
 
-1. **Observe.** Run the agent under the P0 agent with `--debug`. Watch the
+1. **Observe.** Run the validator agent with `--debug`. Watch the
    `fingerprint` match-trace logs and the `exec` events to see the real
    `interpreter_basename`, argv, and env vars.
 2. **Derive discriminators.** Pick a *stable, unique* tuple:
@@ -41,7 +41,17 @@ code. To add support for a new agent:
 3. **Shadow-test.** Confirm both directions:
    - recall: the whole agent process subtree gets tagged;
    - precision: unrelated `node`/`python` processes are **not** tagged.
-   The integration script is a good template.
+
+   The integration script spawns a fake agent (bash as `node` + `CLAUDECODE`) that
+   exercises connect/open/unlink/rename, plus a control process. Requires root:
+
+   ```bash
+   cp fingerprints.yaml.example fingerprints.yaml   # if not already present
+   sudo ./scripts/integration-test.sh
+   ```
+
+   For deployments, configure the `actions:` section in `config.yaml` — see
+   [agent/config.md](agent/config.md).
 4. **Open a PR.** Include the agent name/version you tested against and how you
    verified precision/recall.
 

@@ -12,6 +12,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+FP="fingerprints.yaml"
+if [[ ! -f "$FP" ]]; then
+  FP="fingerprints.yaml.example"
+fi
+
 if [[ $EUID -ne 0 ]]; then
   echo "must run as root (eBPF load needs CAP_BPF/CAP_PERFMON): sudo $0" >&2
   exit 1
@@ -59,7 +64,7 @@ mode_a:
   default_agent_id: agent
 mode_b:
   enabled: true
-  fingerprints_path: "$(pwd)/fingerprints.yaml"
+  fingerprints_path: "$(pwd)/$FP"
 actions:
   enabled: true
   capture: [connect, open, unlink, rename]

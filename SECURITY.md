@@ -21,8 +21,8 @@ the issue and its impact, and reproduction steps or a proof of concept if availa
 - A host-root or `CAP_BPF` attacker is explicitly part of the trusted computing base
   and is **out of scope** (they can manipulate any eBPF state). See the trust and
   threat-model sections of [architecture.md](architecture.md).
-- P0 is observe-only: it does not block, kill, or modify any process. Enforcement
-  and its associated threat surface arrive in later phases.
+- P0 and P0.5 are observe-only: they do not block, kill, or modify any process.
+  Enforcement and its associated threat surface arrive in later phases.
 
 ## Supported versions
 

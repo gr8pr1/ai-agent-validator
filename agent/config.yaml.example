@@ -1,4 +1,6 @@
-# AI Agent Validator — P0 agent configuration.
+# AI Agent Validator — agent configuration example.
+# Copy to config.yaml and edit:  cp config.yaml.example config.yaml
+# Full reference: config.md
 
 log_level: info   # debug|info|warn|error
 log_format: text  # text|json
@@ -18,11 +20,17 @@ mode_b:
   enabled: true
   fingerprints_path: "fingerprints.yaml"
 
+# P0.5: observe-only action capture for enrolled agents (connect/open/unlink/rename).
+actions:
+  enabled: true
+  capture: [connect, open, unlink, rename]
+  open_writes_only: true   # false while testing read visibility (noisy)
+
 report:
-  format: "text"     # text|json
-  audit_log: ""      # path to an append-only JSONL audit log; empty disables
-  all_events: false  # also report untagged exec events (very noisy)
-  snapshot_sec: 30   # periodic snapshot interval in seconds; 0 disables
+  format: text         # text|json
+  audit_log: ""          # append-only JSONL path; empty disables
+  all_events: false      # also report untagged exec events (very noisy)
+  snapshot_sec: 30       # periodic snapshot interval in seconds; 0 disables
 
 debug:
   enabled: false

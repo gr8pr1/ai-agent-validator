@@ -12,13 +12,15 @@ and version policy, and a **fast data plane** where the kernel enforces it
 deterministically with no model in the decision path. See
 [architecture.md](architecture.md) for the full design.
 
-> Status: early. The design is complete; the first code milestone, **P0 (enroll &
-> observe)**, is implemented and observe-only — it never blocks anything yet.
+> Status: **P0 + P0.5 implemented**, observe-only (never blocks). P1 policy loader
+> and P3 enforcement are planned. See [architecture.md](architecture.md) §13.
 
-## What works today (P0)
+## What works today
 
-P0 identifies AI-agent processes and emits a structured, debuggable stream of their
-process-lifecycle activity. Two enrollment modes:
+### P0 — enroll & observe
+
+Identifies AI-agent processes and emits a structured stream of their process-lifecycle
+activity. Two enrollment modes:
 
 - **Mode A — controlled spawn:** any process whose cgroup-v2 path matches a
   configured slice (e.g. `ai-agents.slice`) is enrolled. Launch agents under a
@@ -30,8 +32,13 @@ process-lifecycle activity. Two enrollment modes:
 Once a process is enrolled, the tag propagates across its whole process tree, so a
 `bash -> curl -> sh` subtree spawned by an agent is all attributed to that agent.
 
-Not in P0: any blocking/enforcement, file/network action capture, and the in-kernel
-tag map — those arrive in later phases (see [architecture.md](architecture.md) §13).
+### P0.5 — action capture
+
+For enrolled agents only, the agent also records **connect**, **open**,
+**unlink**, and **rename** syscalls (observe-only). See
+[agent/config.md](agent/config.md) for tuning (`actions.open_writes_only`, etc.).
+
+Not yet: blocking/enforcement and the in-kernel enforcement tag map (P3).
 
 ## Quickstart
 
@@ -40,26 +47,35 @@ headers, and Go 1.24+.
 
 ```bash
 cd agent
-make            # compiles the BPF object and builds the agent
+make                              # compiles the BPF object and builds the agent
+cp config.yaml.example config.yaml  # first time; edit as needed
+cp fingerprints.yaml.example fingerprints.yaml  # if using Mode B defaults
 sudo ./aiblocker-agent --config config.yaml --debug
 ```
 
 In another terminal, start a process that matches a fingerprint to see it enrolled.
-See [agent/README.md](agent/README.md) for build details, flags, the debug HTTP
+See [agent/README.md](agent/README.md) for build details, configuration, debug HTTP
 endpoints, and the integration test.
 
 ## Adding a fingerprint (Mode B)
 
-Fingerprints are data, not code — add an entry to
-[`agent/fingerprints.yaml`](agent/fingerprints.yaml) and reload. For interpreted
+Fingerprints are data, not code — copy
+[`agent/fingerprints.yaml.example`](agent/fingerprints.yaml.example) to
+`agent/fingerprints.yaml` (or point `mode_b.fingerprints_path` at the example) and
+add entries as needed. For interpreted
 agents (Claude Code, Cursor) the kernel-visible binary is the interpreter (`node`),
 so argv + env markers are the discriminators; for compiled agents, the binary path
 is. See [CONTRIBUTING.md](CONTRIBUTING.md) for the derive-and-test workflow.
 
 ## Repository layout
 
-- [`architecture.md`](architecture.md) — full system design and rationale.
-- [`agent/`](agent) — the P0 enroll-and-observe agent (Go + eBPF).
+| Path | Description |
+|------|-------------|
+| [architecture.md](architecture.md) | Full system design and phased roadmap |
+| [agent/](agent/) | Go + eBPF agent (enroll, observe, action capture) |
+| [agent/config.md](agent/config.md) | Agent configuration reference |
+| [agent/config.yaml.example](agent/config.yaml.example) | Starter config file |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Fingerprints, dev setup, PR guidelines |
 
 ## License
 

@@ -1,8 +1,11 @@
-# AI Agent Validator — agent (P0: enroll & observe)
+# AI Agent Validator — agent
 
 A self-contained Go + eBPF agent that enrolls AI-agent processes (Mode A cgroup /
 Mode B fingerprint), propagates the `agent_id` tag across the process tree, and
-reports the tagged process-lifecycle stream. Observe-only — it never blocks.
+reports tagged lifecycle and action events. **Observe-only** — it never blocks.
+
+Current milestone: **P0** (enroll & observe) + **P0.5** (connect/open/unlink/rename
+action capture). See [architecture.md](../architecture.md) §13 for the full roadmap.
 
 ## Build
 
@@ -25,6 +28,8 @@ The compiled BPF object is embedded via `go:embed`, so `make bpf` must run befor
 eBPF load + attach needs root (CAP_BPF + CAP_PERFMON):
 
 ```bash
+cp config.yaml.example config.yaml   # first time only
+cp fingerprints.yaml.example fingerprints.yaml   # if mode_b enabled
 sudo ./aiblocker-agent --config config.yaml
 ```
 
@@ -39,13 +44,17 @@ Flags (override config):
 
 ## Configuration
 
-See [config.yaml](config.yaml). Key sections: `mode_a` (cgroup substrings +
-default agent id), `mode_b` (fingerprints path), `report` (format, audit log,
-snapshot interval), and `debug`.
+| File | Purpose |
+|------|---------|
+| [config.md](config.md) | Full configuration reference (all fields, defaults, examples) |
+| [config.yaml.example](config.yaml.example) | Starter config — copy to `config.yaml` |
+| [fingerprints.yaml.example](fingerprints.yaml.example) | Mode B fingerprint set — copy to `fingerprints.yaml` |
 
-Fingerprints live in [fingerprints.yaml](fingerprints.yaml); each entry's `match`
-block is an AND of `interpreter_basename` / `interpreter_path` / `argv_contains`
-(wildcard globs where `*` spans any characters) / `env_markers.any_of`.
+Key sections: `mode_a`, `mode_b`, `actions` (P0.5 file/network capture), `report`,
+and `debug`.
+
+Each fingerprint `match` block is an AND of `interpreter_basename` /
+`interpreter_path` / `argv_contains` (wildcard globs) / `env_markers.any_of`.
 
 ## Output
 
@@ -53,8 +62,9 @@ block is an AND of `interpreter_basename` / `interpreter_path` / `argv_contains`
   decisions are prefixed `ENROLL`.
 - **stderr (slog)** — startup, snapshots, warnings, and with `--debug` the
   fingerprint match trace. Set `log_file` to duplicate slog to a file.
-- **audit log** — append-only JSONL when `report.audit_log` is set. Only tagged
-  enroll/exec/fork/exit records (not debug traces).
+- **audit log** — append-only JSONL when `report.audit_log` is set. Tagged
+  lifecycle events (`exec`, `fork`, `exit`) and action events (`connect`, `open`,
+  `unlink`, `rename`). Does not include debug traces.
 - **snapshot** — periodic per-agent counters in the logs (`report.snapshot_sec`).
 
 ## Debug mode
@@ -66,12 +76,11 @@ block is an AND of `interpreter_basename` / `interpreter_path` / `argv_contains`
 |----------|-------|
 | `/debug/agents` | live tagged process trees |
 | `/debug/fingerprints` | the loaded fingerprint set |
-| `/debug/stats` | event/enrollment counters + tracked pids |
+| `/debug/stats` | lifecycle + action counters, tracked pids |
 | `/healthz` | liveness |
 
-Debug logs include per-event traces and, crucially, **fingerprint match tracing**
-(which entries were tried and exactly why each did/didn't match) — the primary tool
-for debugging Mode B.
+Debug logs include per-event traces and **fingerprint match tracing** (which entries
+were tried and why each did/didn't match) — the primary tool for debugging Mode B.
 
 ## Integration smoke test
 
@@ -79,21 +88,23 @@ for debugging Mode B.
 sudo ./scripts/integration-test.sh
 ```
 
-Spawns a fake agent (node basename + `CLAUDECODE` marker) plus a control process and
-asserts the agent is enrolled (recall) while the control is not (precision). The fake
-agent uses `env -i` so `CLAUDECODE` appears inside the BPF env prefix (512 bytes).
+Uses `fingerprints.yaml` if present, otherwise `fingerprints.yaml.example`.
+
+Spawns a fake agent (bash copied as `node` + `CLAUDECODE` marker) that performs
+connect/open/unlink/rename syscalls, plus a control process. Asserts enrollment
+recall/precision and action capture for the fake agent only.
 
 ## Package layout
 
-| Package | Responsibility |
-|---------|----------------|
-| `bpf/enroll.bpf.c` | tracepoints (exec/fork/exit), argv+env capture |
-| `internal/ebpfloader` | load object, attach tracepoints, ringbuf + drops |
-| `internal/event` | decode ringbuf records (header + argv/env tail) |
+| Package / file | Responsibility |
+|----------------|----------------|
+| `bpf/enroll.bpf.c` | lifecycle tracepoints + action syscalls; advisory tag map |
+| `internal/ebpfloader` | load object, attach 7 tracepoints, ringbuf, tag map |
+| `internal/event` | decode ringbuf records (lifecycle + action layouts) |
 | `internal/enricher` | resolve binary / user / cgroup path from `/proc` |
 | `internal/fingerprint` | Mode B fingerprint schema, load, match (+ trace) |
-| `internal/proctable` | lineage + `agent_id` tag propagation |
-| `internal/enroll` | enrollment engine + per-agent stats |
-| `internal/report` | stdout/audit sinks (OTLP seam, inert in P0) |
+| `internal/proctable` | lineage + `agent_id` tag propagation (source of truth) |
+| `internal/enroll` | enrollment engine, action handling, per-agent stats |
+| `internal/report` | stdout/audit sinks (OTLP seam, inert) |
 | `internal/debugsrv` | read-only debug HTTP endpoints |
 | `internal/config`, `internal/logging` | config + slog setup |

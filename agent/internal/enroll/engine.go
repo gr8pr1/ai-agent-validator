@@ -188,7 +188,7 @@ func (e *Engine) handleAction(ev *event.Event) {
 		rec.DestPort = ev.DestPort
 	case event.TypeOpen:
 		rec.Path = ev.Path
-		rec.Write = true
+		rec.Write = event.IsOpenWriteIntent(ev.OpenFlags)
 	case event.TypeUnlink:
 		rec.Path = ev.Path
 	case event.TypeRename:
