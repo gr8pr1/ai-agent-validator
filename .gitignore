@@ -4,6 +4,7 @@
 
 # Agent binary
 agent/aiblocker-agent
+agent/policyctl
 
 # Local working state — internal source of truth, intentionally not published
 state.md

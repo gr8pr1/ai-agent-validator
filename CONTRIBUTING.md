@@ -11,9 +11,10 @@ headers, and Go 1.24+.
 
 ```bash
 cd agent
-make            # compile BPF + build
+make            # compile BPF + build agent + policyctl
 make test       # unit tests (BPF load test auto-skips unless root)
 make vet
+make policy-test  # P1 policy loader smoke test (no root)
 gofmt -l .      # must be empty
 ```
 
@@ -22,6 +23,12 @@ The BPF load/verify test and the integration smoke test need root:
 ```bash
 sudo -E go test ./cmd/agent -run TestBPFLoadAndAttach
 sudo ./scripts/integration-test.sh
+```
+
+Policy loader tests need no root:
+
+```bash
+./scripts/policy-test.sh
 ```
 
 ## Contributing a fingerprint (Mode B)
@@ -54,6 +61,19 @@ not code. Copy to `fingerprints.yaml` (or set `mode_b.fingerprints_path`) before
    [agent/config.md](agent/config.md).
 4. **Open a PR.** Include the agent name/version you tested against and how you
    verified precision/recall.
+
+## Contributing a policy rule (P1)
+
+Policy rules are data in [`agent/policy.yaml.example`](agent/policy.yaml.example),
+not code. See [agent/policy.md](agent/policy.md) for the full schema.
+
+1. **Edit** a rule in your local `policy.yaml` (copy from the example).
+2. **Compile** dry-run: `policyctl compile policy.yaml` — fix any validation/conflict errors.
+3. **Sign and load:** `policyctl sign --key policy.key policy.yaml` then
+   `policyctl load --pub policy.pub --store ./policy-store policy.yaml`.
+4. **Verify rollback:** `policyctl history --store ./policy-store` and
+   `policyctl rollback --store ./policy-store <ver>`.
+5. **Open a PR** with the rule change, rationale, and `make policy-test` output.
 
 ## Code
 

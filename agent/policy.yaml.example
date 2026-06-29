@@ -1,0 +1,67 @@
+# AI Agent Validator — example policy bundle (architecture §8).
+# Full reference: policy.md
+#
+# Workflow:
+#   policyctl keygen --key policy.key --pub policy.pub
+#   policyctl sign --key policy.key policy.yaml
+#   policyctl load --pub policy.pub --store ./policy-store policy.yaml
+
+policy_bundle:
+  version: 1
+  agent_scope: "agent:ci-runner"
+  signed_by: "ops-team"
+  default_action: allow
+  fail_direction: open
+  rules:
+    - id: deny-egress-except-registry
+      rationale: >
+        AI agents on this host must not reach public IPs. The internal package
+        registry (10.0.0.0/8:443) is the only allowed egress.
+      match:
+        action: connect
+        dest_ip_not_in: ["10.0.0.0/8"]
+      decision: deny
+      state: enforced
+
+    - id: allow-registry-egress
+      rationale: "Carve-out: internal package registry is allowed."
+      match:
+        action: connect
+        dest_ip_in: ["10.0.0.0/8"]
+        dest_port_in: [443]
+      decision: allow
+      state: enforced
+
+    - id: deny-cred-file-read
+      rationale: "AI agents never need /etc/shadow or SSH private keys."
+      match:
+        action: open
+        path_in: ["/etc/shadow", "/root/.ssh/*", "/home/*/.ssh/*"]
+      decision: deny
+      state: enforced
+
+    - id: deny-disable-enforcer
+      rationale: "Agents must not tamper with the enforcer/monitor or its policy."
+      match:
+        action: open|write|unlink
+        path_in: ["/etc/ai-agent-validator/*", "/sys/fs/bpf/ai-agent-validator/*"]
+      decision: deny
+      state: enforced
+
+    - id: deny-destroy-system-paths
+      rationale: >
+        Agents must not write to or delete OS-critical paths (a confused rm -rf
+        on a system dir). Their own workspace is intentionally NOT covered here.
+      match:
+        action: write|unlink|rename
+        path_in: ["/etc/*", "/boot/*", "/usr/*", "/bin/*", "/sbin/*", "/lib/*"]
+      decision: deny
+      state: enforced
+
+    - id: shadow-new-egress-port
+      rationale: "Surface unusual egress ports before blocking them."
+      match:
+        action: connect
+        dest_port_not_in: [443, 80]
+      decision: deny
+      state: shadow

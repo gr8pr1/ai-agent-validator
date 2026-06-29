@@ -4,8 +4,9 @@ A self-contained Go + eBPF agent that enrolls AI-agent processes (Mode A cgroup 
 Mode B fingerprint), propagates the `agent_id` tag across the process tree, and
 reports tagged lifecycle and action events. **Observe-only** — it never blocks.
 
-Current milestone: **P0** (enroll & observe) + **P0.5** (connect/open/unlink/rename
-action capture). See [architecture.md](../architecture.md) §13 for the full roadmap.
+Current milestones: **P0** (enroll & observe), **P0.5** (action capture), and
+**P1** (policy schema + trusted loader via `policyctl`). See
+[architecture.md](../architecture.md) §13 for the full roadmap.
 
 ## Build
 
@@ -13,17 +14,19 @@ Requirements: Linux 5.8+ with BTF, `clang`/LLVM, libbpf headers
 (`/usr/include/bpf`), and Go 1.24+.
 
 ```bash
-make        # = make bpf + make build
-make bpf    # compile bpf/enroll.bpf.c -> staged for go:embed
-make build  # go build -> ./aiblocker-agent
-make test   # unit tests (BPF load test auto-skips unless root)
+make                 # bpf + aiblocker-agent + policyctl
+make bpf             # compile bpf/enroll.bpf.c -> staged for go:embed
+make build           # go build -> ./aiblocker-agent
+make build-policyctl # go build -> ./policyctl
+make test            # unit tests (BPF load test auto-skips unless root)
 make vet
+make policy-test     # P1 loader smoke test (no root)
 ```
 
 The compiled BPF object is embedded via `go:embed`, so `make bpf` must run before
 `go build`/`go test` of `./cmd/agent`. The object is git-ignored and regenerated.
 
-## Run
+## Run (observe agent)
 
 eBPF load + attach needs root (CAP_BPF + CAP_PERFMON):
 
@@ -42,19 +45,27 @@ Flags (override config):
 | `--log-level` | `debug`\|`info`\|`warn`\|`error` |
 | `--log-format` | `text`\|`json` |
 
+## Policy loader (P1)
+
+`policyctl` is a separate trusted loader for signed policy bundles. It does not
+require root. See [policy.md](policy.md) and [policy.yaml.example](policy.yaml.example).
+
+```bash
+cp policy.yaml.example policy.yaml
+policyctl keygen --key policy.key --pub policy.pub
+policyctl sign --key policy.key policy.yaml
+policyctl load --pub policy.pub --store ./policy-store policy.yaml
+```
+
 ## Configuration
 
 | File | Purpose |
 |------|---------|
-| [config.md](config.md) | Full configuration reference (all fields, defaults, examples) |
+| [config.md](config.md) | Agent configuration reference |
 | [config.yaml.example](config.yaml.example) | Starter config — copy to `config.yaml` |
+| [policy.md](policy.md) | Policy bundle schema + `policyctl` reference |
+| [policy.yaml.example](policy.yaml.example) | Starter policy bundle |
 | [fingerprints.yaml.example](fingerprints.yaml.example) | Mode B fingerprint set — copy to `fingerprints.yaml` |
-
-Key sections: `mode_a`, `mode_b`, `actions` (P0.5 file/network capture), `report`,
-and `debug`.
-
-Each fingerprint `match` block is an AND of `interpreter_basename` /
-`interpreter_path` / `argv_contains` (wildcard globs) / `env_markers.any_of`.
 
 ## Output
 
@@ -79,26 +90,25 @@ Each fingerprint `match` block is an AND of `interpreter_basename` /
 | `/debug/stats` | lifecycle + action counters, tracked pids |
 | `/healthz` | liveness |
 
-Debug logs include per-event traces and **fingerprint match tracing** (which entries
-were tried and why each did/didn't match) — the primary tool for debugging Mode B.
+## Tests
 
-## Integration smoke test
+| Script | Requires root | What it verifies |
+|--------|---------------|------------------|
+| `./scripts/policy-test.sh` | no | P1: sign, load, rollback |
+| `./scripts/integration-test.sh` | yes | P0/P0.5: enroll + action capture |
 
 ```bash
+make policy-test
 sudo ./scripts/integration-test.sh
 ```
-
-Uses `fingerprints.yaml` if present, otherwise `fingerprints.yaml.example`.
-
-Spawns a fake agent (bash copied as `node` + `CLAUDECODE` marker) that performs
-connect/open/unlink/rename syscalls, plus a control process. Asserts enrollment
-recall/precision and action capture for the fake agent only.
 
 ## Package layout
 
 | Package / file | Responsibility |
 |----------------|----------------|
 | `bpf/enroll.bpf.c` | lifecycle tracepoints + action syscalls; advisory tag map |
+| `cmd/policyctl` | P1 trusted policy loader CLI |
+| `internal/policy` | schema, compiler, signing, version store, loader |
 | `internal/ebpfloader` | load object, attach 7 tracepoints, ringbuf, tag map |
 | `internal/event` | decode ringbuf records (lifecycle + action layouts) |
 | `internal/enricher` | resolve binary / user / cgroup path from `/proc` |
