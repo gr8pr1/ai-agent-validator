@@ -2,8 +2,8 @@
 
 Policy bundles are declarative, signed YAML documents that define allow/deny rules
 for AI-agent processes. P1 provides the schema, compiler, signing, and trusted loader
-(`policyctl`). **Enforcement is P3** — P1 compiles and stores policy but does not
-wire it into the running eBPF agent yet.
+(`policyctl`). **P2** adds userspace shadow evaluation in the observe agent (log-only).
+**Enforcement is P3** — the kernel enforcer is not wired yet.
 
 See [architecture.md](../architecture.md) §8 for design rationale and
 [policy.yaml.example](policy.yaml.example) for a starter bundle.
@@ -115,6 +115,12 @@ Rollback is instant: `policyctl rollback --store ./policy-store <version>`.
 | `history [--store DIR]` | List stored versions |
 | `rollback [--store DIR] <version>` | Set current version |
 | `show [--store DIR] [version]` | Print compiled policy (current if version omitted) |
+| `shadow-report [--audit PATH] [--since DURATION]` | Count `shadow_deny` hits per rule, source, and agent (P2 promotion helper) |
+
+`shadow-report` defaults to `audit.jsonl`. `--since` accepts Go duration strings
+(e.g. `24h`, `168h`); groups by `rule_id`, `shadow_source`, and `agent_id`.
+
+Future: `policyctl promote <rule-id>` to flip rule state in the bundle YAML.
 
 ## Smoke test
 
@@ -129,8 +135,16 @@ make policy-test
 
 | Component | Phase | Role |
 |-----------|-------|------|
-| `aiblocker-agent` | P0/P0.5 | Enroll + observe (unchanged in P1) |
-| `policyctl` | P1 | Sign, compile, load policy bundles |
-| Kernel enforcer | P3 | Consumes compiled policy from store |
+| `aiblocker-agent` | P0/P0.5/P2 | Enroll + observe; P2 adds shadow evaluation when `policy.enabled` |
+| `policyctl` | P1/P2 | Sign, compile, load policy bundles; `shadow-report` for promotion review |
+| Kernel enforcer | P3 | In-kernel deny enforcement; consumes compiled policy from maps |
 
-Agent-side `policy:` config wiring is deferred to P3.
+### P2 shadow workflow
+
+1. Author rules (`state: shadow` or `state: enforced`) in a bundle.
+2. `policyctl sign` + `policyctl load` into the store.
+3. Enable `policy:` in the agent config; restart or wait for reload.
+4. Run agents; review `shadow_deny` events in the audit log (`shadow_source`:
+   `shadow` for shadow rules, `live_preview` for enforced-rule previews).
+5. `policyctl shadow-report --audit audit.jsonl` to summarize hits per rule.
+6. When clean, promote rules manually (`state: enforced`), re-sign, and reload.

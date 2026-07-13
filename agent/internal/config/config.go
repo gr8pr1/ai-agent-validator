@@ -17,6 +17,7 @@ type Config struct {
 	ModeA     ModeAConfig   `yaml:"mode_a"`
 	ModeB     ModeBConfig   `yaml:"mode_b"`
 	Actions   ActionsConfig `yaml:"actions"`
+	Policy    PolicyConfig  `yaml:"policy"`
 	Report    ReportConfig  `yaml:"report"`
 	Debug     DebugConfig   `yaml:"debug"`
 }
@@ -32,6 +33,15 @@ type ModeAConfig struct {
 type ModeBConfig struct {
 	Enabled          bool   `yaml:"enabled"`
 	FingerprintsPath string `yaml:"fingerprints_path"`
+}
+
+// PolicyConfig controls P2 shadow-mode evaluation (log-only; no enforcement).
+type PolicyConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	StorePath  string `yaml:"store_path"`
+	PubKeyPath string `yaml:"pub_key_path"`
+	ReloadSec  int    `yaml:"reload_sec"` // poll interval; default 15
+	Scope      string `yaml:"scope"`      // optional override for agent_scope matching
 }
 
 // ActionsConfig controls per-agent file/network action capture.
@@ -87,6 +97,11 @@ func Default() Config {
 			Capture:        []string{"connect", "open", "unlink", "rename"},
 			OpenWritesOnly: true,
 		},
+		Policy: PolicyConfig{
+			Enabled:   false,
+			StorePath: "./policy-store",
+			ReloadSec: 15,
+		},
 		Report: ReportConfig{
 			Format:      "text",
 			AllEvents:   false,
@@ -129,6 +144,12 @@ func (c Config) validate() error {
 	}
 	if !c.ModeA.Enabled && !c.ModeB.Enabled {
 		return fmt.Errorf("at least one of mode_a/mode_b must be enabled")
+	}
+	if c.Policy.Enabled && c.Policy.PubKeyPath == "" {
+		return fmt.Errorf("policy.enabled requires policy.pub_key_path")
+	}
+	if c.Policy.ReloadSec < 0 {
+		return fmt.Errorf("policy.reload_sec must be >= 0")
 	}
 	return nil
 }

@@ -20,7 +20,7 @@ func newTestEngine(cfg config.Config) (*Engine, *proctable.Table) {
 	if err != nil {
 		panic(err)
 	}
-	return New(cfg, enricher.New(), nil, tbl, rep, NoopTagger{}, log), tbl
+	return New(cfg, enricher.New(), nil, tbl, rep, NoopTagger{}, nil, log), tbl
 }
 
 func tagProc(tbl *proctable.Table, pid uint32, startNS uint64) {

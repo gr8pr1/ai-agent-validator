@@ -623,7 +623,7 @@ policy plumbing are solid.
 | **P0 — Enroll & observe** *(implemented)* | Hybrid enrollment (Mode A cgroup + Mode B exec fingerprint); per-`agent_id` lifecycle stream; **argv capture** | `ebpf-host-monitor` | enrollment/attribution (§5.1), userspace proctable, argv |
 | **P0.5 — Action capture** *(implemented)* | Per-agent connect/open/unlink/rename action stream; advisory in-kernel tag map for pre-filter | P0 agent | action tracepoints (§5.2), integration tests. Config: [agent/config.md](agent/config.md) |
 | **P1 — Policy model + loader** *(implemented)* | Policy schema (§8); signed bundle; trusted loader (`policyctl`); compile to map-ready artifact; file-backed version history + rollback | SQLite pattern (file-backed in v1) | policy compiler/loader (§5.4). Docs: [agent/policy.md](agent/policy.md) |
-| **P2 — Shadow mode** | Load rules log-only; "would have blocked" reporting against live traffic | OTLP audit | shadow evaluation, policy lifecycle (§7) |
+| **P2 — Shadow mode** *(implemented)* | Load rules log-only; "would have blocked" reporting against live traffic | OTLP audit (audit JSONL in v1) | shadow evaluation in userspace agent, `policyctl shadow-report`, policy lifecycle (§7) |
 | **P3 — Enforce** | LSM + cgroup-BPF (§9); **deny-only** (`-EPERM`) for file/exec/network/privilege | — | enforcer (§5.5) |
 | **P4 — Denial feedback** | Structured do-not-retry + reason surfaced into the model's context; shim/runtime integration | — | feedback channel (§5.6) — *the differentiator* |
 | **P3+ — Escalation** *(planned)* | Repeat-denial → freeze (Mode A) / kill (Mode B); terminal `decision: kill` rules; quarantine | — | escalation ladder (§5.5) |

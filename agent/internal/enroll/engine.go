@@ -9,6 +9,7 @@ import (
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/enricher"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/event"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/fingerprint"
+	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/policy"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/proctable"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/report"
 )
@@ -27,33 +28,37 @@ func (NoopTagger) UntagPID(uint32) error { return nil }
 
 // Engine wires the enrollment pipeline together.
 type Engine struct {
-	cfg    config.Config
-	enr    *enricher.Enricher
-	fps    *fingerprint.Set
-	tbl    *proctable.Table
-	rep    *report.Reporter
-	tagger KernelTagger
-	log    *slog.Logger
-	stats  *Stats
-	debug  bool
+	cfg          config.Config
+	enr          *enricher.Enricher
+	fps          *fingerprint.Set
+	tbl          *proctable.Table
+	rep          *report.Reporter
+	tagger       KernelTagger
+	policy       *policy.Holder
+	policyScope  string // optional config override for agent_scope matching
+	log          *slog.Logger
+	stats        *Stats
+	debug        bool
 }
 
 // New constructs an Engine. fps may be nil when Mode B is disabled; tagger may
-// be nil (treated as no-op).
-func New(cfg config.Config, enr *enricher.Enricher, fps *fingerprint.Set, tbl *proctable.Table, rep *report.Reporter, tagger KernelTagger, log *slog.Logger) *Engine {
+// be nil (treated as no-op). policy may be nil when shadow mode is disabled.
+func New(cfg config.Config, enr *enricher.Enricher, fps *fingerprint.Set, tbl *proctable.Table, rep *report.Reporter, tagger KernelTagger, pol *policy.Holder, log *slog.Logger) *Engine {
 	if tagger == nil {
 		tagger = NoopTagger{}
 	}
 	return &Engine{
-		cfg:    cfg,
-		enr:    enr,
-		fps:    fps,
-		tbl:    tbl,
-		rep:    rep,
-		tagger: tagger,
-		log:    log,
-		stats:  newStats(),
-		debug:  cfg.Debug.Enabled || strings.EqualFold(cfg.LogLevel, "debug"),
+		cfg:         cfg,
+		enr:         enr,
+		fps:         fps,
+		tbl:         tbl,
+		rep:         rep,
+		tagger:      tagger,
+		policy:      pol,
+		policyScope: cfg.Policy.Scope,
+		log:         log,
+		stats:       newStats(),
+		debug:       cfg.Debug.Enabled || strings.EqualFold(cfg.LogLevel, "debug"),
 	}
 }
 
@@ -201,6 +206,60 @@ func (e *Engine) handleAction(ev *event.Event) {
 		e.log.Debug("action", "event", name, "pid", ev.PID, "agent", p.AgentID, "path", ev.Path)
 	}
 	e.rep.Emit(rec)
+	e.evaluateShadow(ev, p, rec)
+}
+
+func (e *Engine) evaluateShadow(ev *event.Event, p proctable.Proc, actionRec report.Record) {
+	if e.policy == nil {
+		return
+	}
+	cp, meta := e.policy.Get()
+	if cp == nil {
+		return
+	}
+	scope := cp.AgentScope
+	if e.policyScope != "" {
+		scope = e.policyScope
+	}
+	if !policy.ScopeMatches(p.AgentID, scope) {
+		return
+	}
+
+	uid := ev.UID
+	in := policy.ActionInput{
+		Action:      ev.TypeString(),
+		Path:        ev.Path,
+		NewPath:     ev.Path2,
+		DestIP:      ev.DestIP,
+		DestPort:    ev.DestPort,
+		WriteIntent: ev.Type == event.TypeOpen && event.IsOpenWriteIntent(ev.OpenFlags),
+		UID:         &uid,
+		Binary:      p.Binary,
+		Cgroup:      e.enr.CgroupPath(ev.PID),
+	}
+	for _, hit := range policy.EvaluateShadowAndLive(cp, in) {
+		shadowRec := report.Record{
+			Event:         "shadow_deny",
+			PID:           p.PID,
+			RootPID:       p.RootPID,
+			AgentID:       p.AgentID,
+			Mode:          p.Mode,
+			Comm:          p.Comm,
+			Reason:        hit.Rationale,
+			RuleID:        hit.RuleID,
+			PolicyVersion: meta.Version,
+			ShadowSource:  hit.Source,
+			Path:          actionRec.Path,
+			NewPath:       actionRec.NewPath,
+			Dest:          actionRec.Dest,
+			DestPort:      actionRec.DestPort,
+			Write:         actionRec.Write,
+		}
+		e.rep.Emit(shadowRec)
+		if e.debug {
+			e.log.Debug("shadow_deny", "agent", p.AgentID, "rule", hit.RuleID, "source", hit.Source)
+		}
+	}
 }
 
 // tryEnroll attempts Mode A then Mode B and tags the pid on success.

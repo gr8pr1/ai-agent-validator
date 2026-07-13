@@ -259,31 +259,7 @@ func portOverlap(a, b []uint16) bool {
 // EvaluateLive returns the winning decision for a live rule set (for tests / future P3).
 // deny beats allow; higher specificity wins among same decision.
 func EvaluateLive(rules []CompiledRule, action string, path string) (decision, ruleID, rationale string, matched bool) {
-	var best *CompiledRule
-	for i := range rules {
-		r := &rules[i]
-		if r.Action != action {
-			continue
-		}
-		if !ruleMatchesPath(r, path) {
-			continue
-		}
-		if best == nil {
-			best = r
-			continue
-		}
-		if r.Decision == DecisionDeny && best.Decision == DecisionAllow {
-			best = r
-			continue
-		}
-		if r.Decision == best.Decision && r.Specificity > best.Specificity {
-			best = r
-		}
-	}
-	if best == nil {
-		return "", "", "", false
-	}
-	return best.Decision, best.ID, best.Rationale, true
+	return EvaluateActions(rules, ActionInput{Action: action, Path: path})
 }
 
 func ruleMatchesPath(r *CompiledRule, path string) bool {

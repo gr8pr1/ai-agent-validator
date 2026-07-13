@@ -2,11 +2,12 @@
 
 A self-contained Go + eBPF agent that enrolls AI-agent processes (Mode A cgroup /
 Mode B fingerprint), propagates the `agent_id` tag across the process tree, and
-reports tagged lifecycle and action events. **Observe-only** — it never blocks.
+reports tagged lifecycle and action events. **Observe-only** — it never blocks
+(P3 will add kernel enforcement).
 
-Current milestones: **P0** (enroll & observe), **P0.5** (action capture), and
-**P1** (policy schema + trusted loader via `policyctl`). See
-[architecture.md](../architecture.md) §13 for the full roadmap.
+Current milestones: **P0** (enroll & observe), **P0.5** (action capture),
+**P1** (policy schema + trusted loader via `policyctl`), and **P2** (shadow-mode
+policy evaluation in userspace). See [architecture.md](../architecture.md) §13.
 
 ## Build
 
@@ -45,17 +46,25 @@ Flags (override config):
 | `--log-level` | `debug`\|`info`\|`warn`\|`error` |
 | `--log-format` | `text`\|`json` |
 
-## Policy loader (P1)
+## Policy loader (P1) + shadow mode (P2)
 
 `policyctl` is a separate trusted loader for signed policy bundles. It does not
-require root. See [policy.md](policy.md) and [policy.yaml.example](policy.yaml.example).
+require root. When `policy.enabled` is set in the agent config, the observe agent
+loads the current bundle from the store, re-verifies the signature, and evaluates
+captured actions against shadow and enforced rules (log-only `shadow_deny` events).
+
+See [policy.md](policy.md) and [policy.yaml.example](policy.yaml.example).
 
 ```bash
 cp policy.yaml.example policy.yaml
 policyctl keygen --key policy.key --pub policy.pub
 policyctl sign --key policy.key policy.yaml
 policyctl load --pub policy.pub --store ./policy-store policy.yaml
+policyctl shadow-report --audit audit.jsonl   # summarize would-have-blocked hits
 ```
+
+Enable shadow evaluation in `config.yaml` (`policy.enabled: true`, matching
+`agent_scope` to enrolled `agent_id`). Requires action capture (`actions.enabled`).
 
 ## Configuration
 
@@ -70,12 +79,12 @@ policyctl load --pub policy.pub --store ./policy-store policy.yaml
 ## Output
 
 - **stdout** — one line per tagged event (`text`) or JSON (`json`). Enrollment
-  decisions are prefixed `ENROLL`.
+  decisions are prefixed `ENROLL`; shadow verdicts are prefixed `SHADOW_DENY`.
 - **stderr (slog)** — startup, snapshots, warnings, and with `--debug` the
   fingerprint match trace. Set `log_file` to duplicate slog to a file.
 - **audit log** — append-only JSONL when `report.audit_log` is set. Tagged
-  lifecycle events (`exec`, `fork`, `exit`) and action events (`connect`, `open`,
-  `unlink`, `rename`). Does not include debug traces.
+  lifecycle events (`exec`, `fork`, `exit`), action events (`connect`, `open`,
+  `unlink`, `rename`), and P2 `shadow_deny` verdicts. Does not include debug traces.
 - **snapshot** — periodic per-agent counters in the logs (`report.snapshot_sec`).
 
 ## Debug mode
@@ -96,6 +105,8 @@ policyctl load --pub policy.pub --store ./policy-store policy.yaml
 |--------|---------------|------------------|
 | `./scripts/policy-test.sh` | no | P1: sign, load, rollback |
 | `./scripts/integration-test.sh` | yes | P0/P0.5: enroll + action capture |
+| `go test ./internal/enroll/...` | no | P2 shadow evaluation (engine_shadow_test.go) |
+| `go test ./internal/policy/...` | no | P2 evaluator + shadow-report |
 
 ```bash
 make policy-test
@@ -107,14 +118,14 @@ sudo ./scripts/integration-test.sh
 | Package / file | Responsibility |
 |----------------|----------------|
 | `bpf/enroll.bpf.c` | lifecycle tracepoints + action syscalls; advisory tag map |
-| `cmd/policyctl` | P1 trusted policy loader CLI |
-| `internal/policy` | schema, compiler, signing, version store, loader |
+| `cmd/policyctl` | P1 trusted policy loader CLI; P2 `shadow-report` |
+| `internal/policy` | schema, compiler, signing, store, loader, evaluator, holder, shadow-report |
 | `internal/ebpfloader` | load object, attach 7 tracepoints, ringbuf, tag map |
 | `internal/event` | decode ringbuf records (lifecycle + action layouts) |
 | `internal/enricher` | resolve binary / user / cgroup path from `/proc` |
 | `internal/fingerprint` | Mode B fingerprint schema, load, match (+ trace) |
 | `internal/proctable` | lineage + `agent_id` tag propagation (source of truth) |
-| `internal/enroll` | enrollment engine, action handling, per-agent stats |
+| `internal/enroll` | enrollment engine, action handling, P2 shadow evaluation |
 | `internal/report` | stdout/audit sinks (OTLP seam, inert) |
 | `internal/debugsrv` | read-only debug HTTP endpoints |
 | `internal/config`, `internal/logging` | config + slog setup |

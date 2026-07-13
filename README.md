@@ -12,8 +12,8 @@ and version policy, and a **fast data plane** where the kernel enforces it
 deterministically with no model in the decision path. See
 [architecture.md](architecture.md) for the full design.
 
-> Status: **P0 + P0.5 + P1 implemented** (observe-only agent + policy loader).
-> P2 shadow mode and P3 kernel enforcement are planned. See [architecture.md](architecture.md) §13.
+> Status: **P0 + P0.5 + P1 + P2 implemented** (observe agent + policy loader + shadow mode).
+> P3 kernel enforcement is planned. See [architecture.md](architecture.md) §13.
 
 ## What works today
 
@@ -40,7 +40,15 @@ Signed, versioned policy bundles with a trusted `policyctl` CLI: schema validati
 deterministic compiler, Ed25519 signing, file-backed version store, and instant
 rollback. See [agent/policy.md](agent/policy.md).
 
-Not yet: shadow-mode evaluation (P2), kernel enforcement (P3), denial feedback (P4).
+### P2 — shadow mode
+
+When `policy.enabled` in the agent config, evaluates captured actions against
+shadow and enforced rules in userspace and emits `shadow_deny` "would-have-blocked"
+events to the audit log. Nothing is blocked. Use `policyctl shadow-report` to
+summarize hits before promoting rules. See [agent/config.md](agent/config.md) and
+[agent/policy.md](agent/policy.md).
+
+Not yet: kernel enforcement (P3), denial feedback (P4).
 
 ## Quickstart
 

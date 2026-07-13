@@ -99,6 +99,55 @@ re-checks every event against the process table before reporting.
 
 ---
 
+## `policy` — shadow-mode evaluation (P2)
+
+Log-only "would have blocked" evaluation against captured actions. **Does not
+block anything** — kernel enforcement is P3.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable shadow evaluation |
+| `store_path` | string | `./policy-store` | Policy version store (from `policyctl load`) |
+| `pub_key_path` | string | `""` | Ed25519 public key for bundle verification (required when enabled) |
+| `reload_sec` | int | `15` | Poll store `current` for hot reload; `0` disables polling |
+| `scope` | string | `""` | Optional override for `agent_scope` matching (default: bundle scope) |
+
+When enabled, the agent loads the store's current signed bundle on startup and on
+each reload, **re-verifies the signature**, recompiles, and evaluates each captured
+action against **shadow** and **live (enforced)** rule sets. Matching deny rules
+emit a separate `shadow_deny` audit event (dual emit with the original action).
+
+**Prerequisites:** `actions.enabled` must be true and the action type must appear
+in `actions.capture`. P2 evaluates only captured P0.5 actions (`connect`, `open`,
+`unlink`, `rename`) — not exec lifecycle events. `match.action: write` matches
+`open` events with write intent, not raw `write()` syscalls.
+
+**Shadow sources:** `state: shadow` rules emit `shadow_source: "shadow"`; `state:
+enforced` rules emit `shadow_source: "live_preview"`. Both can fire on one action.
+
+**Startup:** invalid/missing store or bad signature → agent exits. **Reload:** failures
+log a warning and keep the previous policy; reload is skipped when version unchanged.
+`reload_sec: 0` disables polling.
+
+`agent_scope` matches enrolled `agent_id` by exact equality (optional `agent:`
+prefix stripped on both sides). `policy.enabled` requires `policy.pub_key_path`.
+
+**Predicate availability:** path, dest IP/port, uid, binary, and cgroup are
+evaluated when present on the action/enrollment record. Predicates referencing
+missing fields are treated as non-matching.
+
+Example:
+
+```yaml
+policy:
+  enabled: true
+  store_path: "./policy-store"
+  pub_key_path: "policy.pub"
+  reload_sec: 15
+```
+
+---
+
 ## `report` — output sinks
 
 | Field | Type | Default | Description |
@@ -112,10 +161,10 @@ re-checks every event against the process table before reporting.
 
 | Sink | Contents |
 |------|----------|
-| **stdout** | Tagged lifecycle + action events (`text` or `json`) |
+| **stdout** | Tagged lifecycle + action + `shadow_deny` events (`text` or `json`; shadow prefix `SHADOW_DENY`) |
 | **stderr (slog)** | Startup, snapshots, warnings; with `--debug`, fingerprint traces |
 | **`log_file`** | Duplicate of slog when set |
-| **`audit_log`** | Tagged events only: `exec`, `fork`, `exit`, `connect`, `open`, `unlink`, `rename`, plus `session_start` marker |
+| **`audit_log`** | Tagged events only: `exec`, `fork`, `exit`, `connect`, `open`, `unlink`, `rename`, `shadow_deny`, plus `session_start` marker |
 
 Enrollment decisions on stdout are prefixed `ENROLL` in text mode.
 
@@ -131,6 +180,12 @@ Action:
 
 ```json
 {"event":"open","pid":12427,"agent_id":"claude-code","path":"/root/ai-agent-validator/agent/config.yaml","write":true}
+```
+
+Shadow verdict (P2, when `policy.enabled`):
+
+```json
+{"event":"shadow_deny","pid":12427,"agent_id":"claude-code","rule_id":"deny-cred-file-read","shadow_source":"shadow","policy_version":1,"reason":"AI agents never need credential files","path":"/etc/shadow","write":true}
 ```
 
 ---

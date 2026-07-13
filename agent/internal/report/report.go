@@ -15,23 +15,26 @@ import (
 
 // Record is one reportable observation.
 type Record struct {
-	Time     time.Time `json:"time"`
-	Event    string    `json:"event"` // exec|fork|exit|connect|open|unlink|rename
-	Enrolled bool      `json:"enrolled,omitempty"`
-	PID      uint32    `json:"pid"`
-	PPID     uint32    `json:"ppid,omitempty"`
-	RootPID  uint32    `json:"root_pid,omitempty"`
-	AgentID  string    `json:"agent_id,omitempty"`
-	Mode     string    `json:"mode,omitempty"`
-	Reason   string    `json:"reason,omitempty"`
-	Comm     string    `json:"comm,omitempty"`
-	Binary   string    `json:"binary,omitempty"`
-	Argv     []string  `json:"argv,omitempty"`
-	Dest     string    `json:"dest,omitempty"`
-	DestPort uint16    `json:"dest_port,omitempty"`
-	Path     string    `json:"path,omitempty"`
-	NewPath  string    `json:"new_path,omitempty"`
-	Write    bool      `json:"write,omitempty"`
+	Time          time.Time `json:"time"`
+	Event         string    `json:"event"` // exec|fork|exit|connect|open|unlink|rename|shadow_deny
+	Enrolled      bool      `json:"enrolled,omitempty"`
+	PID           uint32    `json:"pid"`
+	PPID          uint32    `json:"ppid,omitempty"`
+	RootPID       uint32    `json:"root_pid,omitempty"`
+	AgentID       string    `json:"agent_id,omitempty"`
+	Mode          string    `json:"mode,omitempty"`
+	Reason        string    `json:"reason,omitempty"`
+	Comm          string    `json:"comm,omitempty"`
+	Binary        string    `json:"binary,omitempty"`
+	Argv          []string  `json:"argv,omitempty"`
+	Dest          string    `json:"dest,omitempty"`
+	DestPort      uint16    `json:"dest_port,omitempty"`
+	Path          string    `json:"path,omitempty"`
+	NewPath       string    `json:"new_path,omitempty"`
+	Write         bool      `json:"write,omitempty"`
+	RuleID        string    `json:"rule_id,omitempty"`
+	PolicyVersion int       `json:"policy_version,omitempty"`
+	ShadowSource  string    `json:"shadow_source,omitempty"` // shadow|live_preview
 }
 
 // Reporter fans a Record out to stdout and an optional audit-log file.
@@ -93,11 +96,28 @@ func (r *Reporter) render(rec Record) string {
 		return string(jsonBytes(rec))
 	}
 	var b strings.Builder
-	if rec.Enrolled {
-		b.WriteString("ENROLL ")
-	} else {
-		b.WriteString(strings.ToUpper(rec.Event))
-		b.WriteByte(' ')
+	switch rec.Event {
+	case "shadow_deny":
+		b.WriteString("SHADOW_DENY ")
+		fmt.Fprintf(&b, "pid=%d agent=%s rule=%s source=%s policy_v=%d",
+			rec.PID, rec.AgentID, rec.RuleID, rec.ShadowSource, rec.PolicyVersion)
+		if rec.Reason != "" {
+			fmt.Fprintf(&b, " reason=%q", rec.Reason)
+		}
+		if rec.Path != "" {
+			fmt.Fprintf(&b, " path=%s", rec.Path)
+		}
+		if rec.Dest != "" {
+			fmt.Fprintf(&b, " dest=%s:%d", rec.Dest, rec.DestPort)
+		}
+		return b.String()
+	default:
+		if rec.Enrolled {
+			b.WriteString("ENROLL ")
+		} else {
+			b.WriteString(strings.ToUpper(rec.Event))
+			b.WriteByte(' ')
+		}
 	}
 	fmt.Fprintf(&b, "pid=%d", rec.PID)
 	if rec.PPID != 0 {

@@ -27,6 +27,7 @@ import (
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/event"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/fingerprint"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/logging"
+	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/policy"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/proctable"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/report"
 )
@@ -66,7 +67,7 @@ func main() {
 		fallback.Error("setup logging", "err", err)
 		os.Exit(1)
 	}
-	log.Info("starting ebpf-ai-blocker P0 agent", "mode_a", cfg.ModeA.Enabled, "mode_b", cfg.ModeB.Enabled)
+	log.Info("starting ebpf-ai-blocker agent", "mode_a", cfg.ModeA.Enabled, "mode_b", cfg.ModeB.Enabled, "policy", cfg.Policy.Enabled)
 	if cfg.LogFile != "" {
 		log.Info("slog output also written to log_file", "path", cfg.LogFile)
 	}
@@ -117,7 +118,33 @@ func main() {
 	}
 
 	tbl := proctable.New()
-	eng := enroll.New(cfg, enricher.New(), fps, tbl, rep, loader, log)
+
+	var polHolder *policy.Holder
+	if cfg.Policy.Enabled {
+		pub, err := policy.LoadPublicKey(cfg.Policy.PubKeyPath)
+		if err != nil {
+			log.Error("loading policy public key", "path", cfg.Policy.PubKeyPath, "err", err)
+			os.Exit(1)
+		}
+		store, err := policy.OpenStore(cfg.Policy.StorePath)
+		if err != nil {
+			log.Error("opening policy store", "path", cfg.Policy.StorePath, "err", err)
+			os.Exit(1)
+		}
+		polHolder = policy.NewHolder()
+		cp, meta, err := policy.LoadCurrent(store, pub)
+		if err != nil {
+			log.Error("loading current policy", "err", err)
+			os.Exit(1)
+		}
+		polHolder.Swap(cp, meta)
+		log.Info("policy shadow mode enabled",
+			"version", meta.Version, "scope", cp.AgentScope,
+			"live_rules", len(cp.Live), "shadow_rules", len(cp.Shadow),
+			"reload_sec", cfg.Policy.ReloadSec)
+	}
+
+	eng := enroll.New(cfg, enricher.New(), fps, tbl, rep, loader, polHolder, log)
 
 	// Signals + lifecycle.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -132,7 +159,7 @@ func main() {
 		}()
 	}
 
-	go backgroundTasks(ctx, eng, loader, tbl, cfg, log)
+	go backgroundTasks(ctx, eng, loader, tbl, cfg, polHolder, log)
 
 	var closeReader sync.Once
 	closeRingbuf := func() {
@@ -179,8 +206,8 @@ func isRingbufClosed(err error) bool {
 	return errors.Is(err, cringbuf.ErrClosed) || errors.Is(err, os.ErrClosed)
 }
 
-// backgroundTasks runs the periodic snapshot report and proctable pruning.
-func backgroundTasks(ctx context.Context, eng *enroll.Engine, loader *ebpfloader.Loader, tbl *proctable.Table, cfg config.Config, log *slog.Logger) {
+// backgroundTasks runs the periodic snapshot report, proctable pruning, and policy reload.
+func backgroundTasks(ctx context.Context, eng *enroll.Engine, loader *ebpfloader.Loader, tbl *proctable.Table, cfg config.Config, polHolder *policy.Holder, log *slog.Logger) {
 	snapEvery := time.Duration(cfg.Report.SnapshotSec) * time.Second
 	if snapEvery <= 0 {
 		snapEvery = time.Hour
@@ -189,6 +216,15 @@ func backgroundTasks(ctx context.Context, eng *enroll.Engine, loader *ebpfloader
 	prune := time.NewTicker(time.Minute)
 	defer snap.Stop()
 	defer prune.Stop()
+
+	var reload *time.Ticker
+	var reloadCh <-chan time.Time
+	if cfg.Policy.Enabled && polHolder != nil && cfg.Policy.ReloadSec > 0 {
+		reloadEvery := time.Duration(cfg.Policy.ReloadSec) * time.Second
+		reload = time.NewTicker(reloadEvery)
+		defer reload.Stop()
+		reloadCh = reload.C
+	}
 
 	for {
 		select {
@@ -206,6 +242,32 @@ func backgroundTasks(ctx context.Context, eng *enroll.Engine, loader *ebpfloader
 			}
 		case <-prune.C:
 			tbl.Prune(2 * time.Minute)
+		case <-reloadCh:
+			reloadPolicy(cfg, polHolder, log)
 		}
 	}
+}
+
+func reloadPolicy(cfg config.Config, holder *policy.Holder, log *slog.Logger) {
+	pub, err := policy.LoadPublicKey(cfg.Policy.PubKeyPath)
+	if err != nil {
+		log.Warn("policy reload: load pubkey", "err", err)
+		return
+	}
+	store, err := policy.OpenStore(cfg.Policy.StorePath)
+	if err != nil {
+		log.Warn("policy reload: open store", "err", err)
+		return
+	}
+	cp, meta, err := policy.LoadCurrent(store, pub)
+	if err != nil {
+		log.Warn("policy reload: load current", "err", err)
+		return
+	}
+	prev, _ := holder.Get()
+	if prev != nil && prev.Version == cp.Version {
+		return
+	}
+	holder.Swap(cp, meta)
+	log.Info("policy reloaded", "version", meta.Version, "live_rules", len(cp.Live), "shadow_rules", len(cp.Shadow))
 }

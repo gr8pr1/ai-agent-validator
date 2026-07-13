@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/policy"
 )
@@ -34,6 +35,8 @@ func main() {
 		err = cmdRollback(os.Args[2:])
 	case "show":
 		err = cmdShow(os.Args[2:])
+	case "shadow-report":
+		err = cmdShadowReport(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 		return
@@ -60,8 +63,11 @@ Usage:
   policyctl history [--store ./policy-store]
   policyctl rollback [--store ./policy-store] <version>
   policyctl show [--store ./policy-store] [version]
+  policyctl shadow-report [--audit PATH] [--since DURATION]
 
 Flags must appear before positional arguments.
+
+// TODO (future, decision 8B): policyctl promote <rule-id> — flip rule state in bundle YAML.
 
 `)
 }
@@ -269,5 +275,28 @@ func cmdShow(args []string) error {
 	if err := enc.Encode(stored.Compiled); err != nil {
 		return err
 	}
+	return nil
+}
+
+func cmdShadowReport(args []string) error {
+	fs := flag.NewFlagSet("shadow-report", flag.ExitOnError)
+	auditPath := fs.String("audit", "audit.jsonl", "audit log JSONL path")
+	sinceDur := fs.String("since", "", "only count events after this duration ago (e.g. 24h, 168h)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	var since time.Time
+	if *sinceDur != "" {
+		d, err := time.ParseDuration(*sinceDur)
+		if err != nil {
+			return fmt.Errorf("invalid --since duration: %w", err)
+		}
+		since = time.Now().Add(-d)
+	}
+	rows, err := policy.ShadowReport(*auditPath, since)
+	if err != nil {
+		return err
+	}
+	fmt.Print(policy.FormatShadowReport(rows))
 	return nil
 }
