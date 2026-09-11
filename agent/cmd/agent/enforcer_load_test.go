@@ -46,7 +46,7 @@ func TestEnforcerBPFSkeleton(t *testing.T) {
 		t.Fatalf("open deny ringbuf: %v", err)
 	}
 
-	for _, name := range []string{"policy_ctrl", "tagged_pids", "path_deny", "path_allow", "ip_deny", "port_deny", "deny_verdicts"} {
+	for _, name := range []string{"policy_ctrl", "tagged_pids", "path_deny", "path_allow", "ip_deny", "ip_allow", "port_deny", "port_allow", "deny_verdicts"} {
 		if loader.Maps()[name] == nil {
 			t.Fatalf("map %q not found", name)
 		}

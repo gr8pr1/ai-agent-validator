@@ -21,6 +21,10 @@ char LICENSE[] SEC("license") = "GPL";
 #define VERDICT_UNLINK 2
 #define VERDICT_RENAME 3
 #define VERDICT_CONNECT 4
+#define VERDICT_WRITE 5
+
+#define MAP_DECISION_ALLOW 1
+#define MAP_DECISION_DENY 2
 
 // Userspace-owned control plane (P3.3 mapload).
 struct policy_ctrl {
@@ -39,8 +43,9 @@ struct lpm_key {
 
 // Per-path rule metadata stored in LPM trie values.
 struct path_rule {
-	__u8 decision;   // 1=allow 2=deny
-	__u8 _pad[3];
+	__u8 decision;   // MAP_DECISION_ALLOW | MAP_DECISION_DENY
+	__u8 action;     // VERDICT_* for hook selection
+	__u8 _pad[2];
 	__u32 rule_id_hash;
 	__u32 specificity;
 };
@@ -48,7 +53,8 @@ struct path_rule {
 // Per-port rule for connect deny/allow lists.
 struct port_rule {
 	__u8 decision;
-	__u8 _pad[3];
+	__u8 action;     // VERDICT_CONNECT
+	__u8 _pad[2];
 	__u32 rule_id_hash;
 };
 
@@ -107,6 +113,21 @@ struct {
 	__type(key, __u16);
 	__type(value, struct port_rule);
 } port_deny SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
+	__uint(max_entries, 128);
+	__uint(map_flags, BPF_F_NO_PREALLOC);
+	__type(key, struct lpm_key);
+	__type(value, struct path_rule);
+} ip_allow SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 64);
+	__type(key, __u16);
+	__type(value, struct port_rule);
+} port_allow SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);

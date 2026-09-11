@@ -8,6 +8,8 @@ import (
 	"github.com/cilium/ebpf/link"
 	cringbuf "github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
+
+	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/policy"
 )
 
 // lsmProgram binds a BPF LSM program in the enforcer object.
@@ -126,6 +128,25 @@ func (l *EnforcerLoader) Maps() map[string]*ebpf.Map {
 		return nil
 	}
 	return l.coll.Maps
+}
+
+// EnforcerMaps returns the policy map subset for LoadLive.
+func (l *EnforcerLoader) EnforcerMaps() policy.EnforcerMapSet {
+	m := l.Maps()
+	return policy.EnforcerMapSet{
+		PolicyCtrl: m["policy_ctrl"],
+		PathDeny:   m["path_deny"],
+		PathAllow:  m["path_allow"],
+		IPDeny:     m["ip_deny"],
+		IPAllow:    m["ip_allow"],
+		PortDeny:   m["port_deny"],
+		PortAllow:  m["port_allow"],
+	}
+}
+
+// LoadLivePolicy loads enforced rules into kernel maps (P3.2).
+func (l *EnforcerLoader) LoadLivePolicy(cp *policy.CompiledPolicy, ctrl policy.PolicyCtrlValues) (policy.LoadStats, error) {
+	return policy.LoadLive(cp, l.EnforcerMaps(), ctrl)
 }
 
 // Close detaches LSM links and releases the collection.
