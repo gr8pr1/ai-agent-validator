@@ -426,7 +426,7 @@ int handle_openat(struct trace_event_raw_sys_enter *ctx)
 		if (path_len > 0) {
 			po.len = (__u16)path_len;
 			po.open_flags = flags;
-			if (bpf_probe_read_kernel(po.path, path_len, path_buf) == 0) {
+			if (bpf_probe_read_kernel(po.path, MAX_PATH - 1, path_buf) == 0) {
 				__u32 zero = 0;
 
 				bpf_map_update_elem(&pending_open_paths, &pid, &po, BPF_ANY);

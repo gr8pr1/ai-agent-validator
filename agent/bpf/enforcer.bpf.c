@@ -603,8 +603,9 @@ static __always_inline int enforce_openat_from_pending(__u32 pid)
 	int write_intent, rc, len;
 	__u32 k = 0;
 
-	(void)pid;
-	po = bpf_map_lookup_elem(&pending_open_cpu, &k);
+	po = bpf_map_lookup_elem(&pending_open_paths, &pid);
+	if (!po || !valid_path_len(po->len))
+		po = bpf_map_lookup_elem(&pending_open_cpu, &k);
 	path = scratch_path_buf();
 	if (!po || !path || !valid_path_len(po->len))
 		return 0;
@@ -626,8 +627,9 @@ static __always_inline int enforce_connect_from_pending(__u32 pid)
 	int rc, ip_len;
 	__u32 k = 0;
 
-	(void)pid;
-	pc = bpf_map_lookup_elem(&pending_connect_cpu, &k);
+	pc = bpf_map_lookup_elem(&pending_connects, &pid);
+	if (!pc)
+		pc = bpf_map_lookup_elem(&pending_connect_cpu, &k);
 	if (!pc)
 		return 0;
 	ip_len = pc->ip_len;
