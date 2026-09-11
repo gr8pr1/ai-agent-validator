@@ -552,47 +552,55 @@ static __always_inline int cgroup_connect_action(__u8 *ip, int ip_len, __u16 por
 	return 0;
 }
 
-// Cgroup connect hooks must read bpf_sock_addr fields in the SEC function itself;
-// passing ctx into inline helpers breaks verifier context tracking on 6.8.
+static __always_inline void ipv6_word_to_bytes(__u8 *ip, int off, __u32 w)
+{
+	ip[off] = w & 0xff;
+	ip[off + 1] = (w >> 8) & 0xff;
+	ip[off + 2] = (w >> 16) & 0xff;
+	ip[off + 3] = (w >> 24) & 0xff;
+}
+
+// Cgroup connect hooks must read bpf_sock_addr fields in the SEC function itself,
+// without loops or passing ctx into helpers (verifier rejects on 6.8).
 SEC("cgroup/connect4")
 int enforce_cgroup_connect4(struct bpf_sock_addr *ctx)
 {
 	__u8 ip[4];
 	__u32 ip4;
-	__u16 port;
+	__u32 user_port;
 
+	ip4 = ctx->user_ip4;
+	user_port = ctx->user_port;
 	if (!is_enforcement_active())
 		return 0;
 
-	ip4 = ctx->user_ip4;
 	ip[0] = ip4 & 0xff;
 	ip[1] = (ip4 >> 8) & 0xff;
 	ip[2] = (ip4 >> 16) & 0xff;
 	ip[3] = (ip4 >> 24) & 0xff;
-	port = cgroup_user_port(ctx->user_port);
-	return cgroup_connect_action(ip, 4, port);
+	return cgroup_connect_action(ip, 4, cgroup_user_port(user_port));
 }
 
 SEC("cgroup/connect6")
 int enforce_cgroup_connect6(struct bpf_sock_addr *ctx)
 {
 	__u8 ip[16];
-	__u16 port;
-	int i;
+	__u32 w0, w1, w2, w3;
+	__u32 user_port;
 
+	w0 = ctx->user_ip6[0];
+	w1 = ctx->user_ip6[1];
+	w2 = ctx->user_ip6[2];
+	w3 = ctx->user_ip6[3];
+	user_port = ctx->user_port;
 	if (!is_enforcement_active())
 		return 0;
 
-	for (i = 0; i < 4; i++) {
-		__u32 w = ctx->user_ip6[i];
-
-		ip[i * 4] = w & 0xff;
-		ip[i * 4 + 1] = (w >> 8) & 0xff;
-		ip[i * 4 + 2] = (w >> 16) & 0xff;
-		ip[i * 4 + 3] = (w >> 24) & 0xff;
-	}
-	port = cgroup_user_port(ctx->user_port);
-	return cgroup_connect_action(ip, 16, port);
+	ipv6_word_to_bytes(ip, 0, w0);
+	ipv6_word_to_bytes(ip, 4, w1);
+	ipv6_word_to_bytes(ip, 8, w2);
+	ipv6_word_to_bytes(ip, 12, w3);
+	return cgroup_connect_action(ip, 16, cgroup_user_port(user_port));
 }
 
 // file_open: inode deny/allow only when bpf LSM is active. Path rules are enforced
