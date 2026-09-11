@@ -74,10 +74,6 @@ struct path_buf {
 	char data[MAX_PATH];
 };
 
-// bpf_d_path requires a trusted struct path pointer; stack paths fail verifier.
-struct path_slot {
-	struct path p;
-};
 
 struct sockaddr_in_simple {
 	__u16 sin_family;
@@ -165,13 +161,6 @@ struct {
 	__type(value, struct path_buf);
 } path_scratch SEC(".maps");
 
-struct {
-	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, 1);
-	__type(key, __u32);
-	__type(value, struct path_slot);
-} path_slot_map SEC(".maps");
-
 static __always_inline int is_enforcement_active(void)
 {
 	__u32 k = 0;
@@ -203,12 +192,6 @@ static __always_inline char *scratch_path(void)
 	if (!b)
 		return NULL;
 	return b->data;
-}
-
-static __always_inline struct path_slot *scratch_path_struct(void)
-{
-	__u32 k = 0;
-	return bpf_map_lookup_elem(&path_slot_map, &k);
 }
 
 static __always_inline __u16 port_host(__be16 p)
@@ -440,14 +423,8 @@ static __always_inline int enforce_connect(struct sockaddr *address, int addrlen
 
 static __always_inline int read_path_from_file(struct file *file, char *path_buf)
 {
-	struct path_slot *slot = scratch_path_struct();
-	long ret;
-
-	if (!slot)
-		return -1;
-	if (bpf_core_read(&slot->p, sizeof(slot->p), &file->f_path) != 0)
-		return -1;
-	ret = bpf_d_path(&slot->p, path_buf, MAX_PATH);
+	// Must pass the in-kernel f_path pointer; copies on stack/map fail verifier.
+	long ret = bpf_d_path(&file->f_path, path_buf, MAX_PATH);
 	return path_len_from_d_path(ret);
 }
 
