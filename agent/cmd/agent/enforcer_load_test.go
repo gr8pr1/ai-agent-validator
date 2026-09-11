@@ -1,15 +1,11 @@
 package main
 
 import (
-	_ "embed"
 	"os"
 	"testing"
 
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/ebpfloader"
 )
-
-//go:embed bpf/enforcer.bpf.o
-var enforcerObject []byte
 
 // TestEnforcerBPFSkeleton loads the enforcer object and attaches LSM programs.
 // Requires root and CONFIG_BPF_LSM (lsm=...,bpf). Skipped otherwise.

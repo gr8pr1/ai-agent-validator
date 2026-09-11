@@ -123,6 +123,28 @@ func TestHandleActionAllowOnlyNoShadowDeny(t *testing.T) {
 	}
 }
 
+func TestHandleActionEnforceModeSkipsLivePreview(t *testing.T) {
+	cp := &policy.CompiledPolicy{
+		AgentScope: "claude-code",
+		Live: []policy.CompiledRule{{
+			ID: "deny-shadow-file", Rationale: "no shadow reads", Decision: policy.DecisionDeny,
+			Action: "open", PathIn: []string{"/etc/shadow"}, Specificity: 12,
+		}},
+	}
+	eng, tbl, auditPath := newTestEngineWithPolicy(t, "claude-code", cp)
+	eng.cfg.Policy.Mode = config.PolicyModeEnforce
+	tagProc(tbl, 42, 100)
+
+	eng.Handle(&event.Event{Type: event.TypeOpen, PID: 42, StartTimeNs: 100, Path: "/etc/shadow", OpenFlags: 1})
+
+	events := readAuditEvents(t, auditPath)
+	for _, e := range events {
+		if e.Event == "shadow_deny" {
+			t.Fatalf("enforce mode should not emit live_preview shadow_deny: %+v", e)
+		}
+	}
+}
+
 func TestHandleActionLivePreviewShadowDeny(t *testing.T) {
 	cp := &policy.CompiledPolicy{
 		AgentScope: "claude-code",

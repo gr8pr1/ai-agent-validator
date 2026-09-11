@@ -89,9 +89,6 @@ func LoadLive(cp *CompiledPolicy, maps EnforcerMapSet, ctrl PolicyCtrlValues) (L
 	if err := clearPolicyMaps(maps); err != nil {
 		return stats, err
 	}
-	if err := writePolicyCtrl(cp, maps.PolicyCtrl, ctrl); err != nil {
-		return stats, err
-	}
 	for _, rule := range cp.Live {
 		if rule.UID != nil || rule.Binary != "" || rule.Cgroup != "" {
 			stats.Skipped++
@@ -125,6 +122,9 @@ func LoadLive(cp *CompiledPolicy, maps EnforcerMapSet, ctrl PolicyCtrlValues) (L
 			stats.PathDeny += n.pathDeny
 			stats.PathAllow += n.pathAllow
 		}
+	}
+	if err := writePolicyCtrl(cp, maps.PolicyCtrl, ctrl); err != nil {
+		return stats, err
 	}
 	return stats, nil
 }

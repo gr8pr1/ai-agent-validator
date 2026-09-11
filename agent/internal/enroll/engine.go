@@ -237,7 +237,13 @@ func (e *Engine) evaluateShadow(ev *event.Event, p proctable.Proc, actionRec rep
 		Binary:      p.Binary,
 		Cgroup:      e.enr.CgroupPath(ev.PID),
 	}
-	for _, hit := range policy.EvaluateShadowAndLive(cp, in) {
+	var hits []policy.ShadowHit
+	if e.cfg.Policy.EffectiveMode() == config.PolicyModeEnforce {
+		hits = policy.EvaluateShadowOnly(cp, in)
+	} else {
+		hits = policy.EvaluateShadowAndLive(cp, in)
+	}
+	for _, hit := range hits {
 		shadowRec := report.Record{
 			Event:         "shadow_deny",
 			PID:           p.PID,

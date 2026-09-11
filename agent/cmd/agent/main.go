@@ -35,6 +35,9 @@ import (
 //go:embed bpf/enroll.bpf.o
 var bpfObject []byte
 
+//go:embed bpf/enforcer.bpf.o
+var enforcerObject []byte
+
 func main() {
 	var (
 		configPath = flag.String("config", "config.yaml", "path to config file")
@@ -67,7 +70,9 @@ func main() {
 		fallback.Error("setup logging", "err", err)
 		os.Exit(1)
 	}
-	log.Info("starting ebpf-ai-blocker agent", "mode_a", cfg.ModeA.Enabled, "mode_b", cfg.ModeB.Enabled, "policy", cfg.Policy.Enabled)
+	policyMode := cfg.Policy.EffectiveMode()
+	log.Info("starting ebpf-ai-blocker agent",
+		"mode_a", cfg.ModeA.Enabled, "mode_b", cfg.ModeB.Enabled, "policy_mode", policyMode)
 	if cfg.LogFile != "" {
 		log.Info("slog output also written to log_file", "path", cfg.LogFile)
 	}
@@ -98,6 +103,26 @@ func main() {
 	}
 	log.Info("attached tracepoints", "tracepoints", attached)
 
+	var enforcer *ebpfloader.EnforcerLoader
+	if policyMode == config.PolicyModeEnforce {
+		if len(enforcerObject) == 0 {
+			log.Error("embedded enforcer BPF object is empty; run `make bpf` first")
+			os.Exit(1)
+		}
+		enforcer, err = ebpfloader.LoadEnforcer(enforcerObject)
+		if err != nil {
+			log.Error("loading enforcer BPF", "err", err)
+			os.Exit(1)
+		}
+		defer enforcer.Close()
+		lsmAttached, err := enforcer.AttachLSM()
+		if err != nil {
+			log.Error("attaching LSM enforcer (requires root and CONFIG_BPF_LSM)", "err", err)
+			os.Exit(1)
+		}
+		log.Info("attached LSM enforcer", "programs", lsmAttached)
+	}
+
 	reader, err := loader.Reader()
 	if err != nil {
 		log.Error("opening ringbuf", "err", err)
@@ -120,7 +145,7 @@ func main() {
 	tbl := proctable.New()
 
 	var polHolder *policy.Holder
-	if cfg.Policy.Enabled {
+	if cfg.Policy.Active() {
 		pub, err := policy.LoadPublicKey(cfg.Policy.PubKeyPath)
 		if err != nil {
 			log.Error("loading policy public key", "path", cfg.Policy.PubKeyPath, "err", err)
@@ -137,14 +162,27 @@ func main() {
 			log.Error("loading current policy", "err", err)
 			os.Exit(1)
 		}
+		if enforcer != nil {
+			stats, err := applyLivePolicy(enforcer, cp, true, log)
+			if err != nil {
+				log.Error("loading live policy into kernel maps", "err", err)
+				os.Exit(1)
+			}
+			log.Info("kernel enforcement maps loaded", "stats", stats, "enforcement_active", true)
+		}
 		polHolder.Swap(cp, meta)
-		log.Info("policy shadow mode enabled",
+		log.Info("policy enabled",
+			"mode", policyMode,
 			"version", meta.Version, "scope", cp.AgentScope,
 			"live_rules", len(cp.Live), "shadow_rules", len(cp.Shadow),
 			"reload_sec", cfg.Policy.ReloadSec)
 	}
 
-	eng := enroll.New(cfg, enricher.New(), fps, tbl, rep, loader, polHolder, log)
+	var tagger enroll.KernelTagger = loader
+	if enforcer != nil {
+		tagger = enroll.MultiTagger{loader, enforcer}
+	}
+	eng := enroll.New(cfg, enricher.New(), fps, tbl, rep, tagger, polHolder, log)
 
 	// Signals + lifecycle.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -159,7 +197,7 @@ func main() {
 		}()
 	}
 
-	go backgroundTasks(ctx, eng, loader, tbl, cfg, polHolder, log)
+	go backgroundTasks(ctx, eng, loader, tbl, cfg, polHolder, enforcer, log)
 
 	var closeReader sync.Once
 	closeRingbuf := func() {
@@ -207,7 +245,7 @@ func isRingbufClosed(err error) bool {
 }
 
 // backgroundTasks runs the periodic snapshot report, proctable pruning, and policy reload.
-func backgroundTasks(ctx context.Context, eng *enroll.Engine, loader *ebpfloader.Loader, tbl *proctable.Table, cfg config.Config, polHolder *policy.Holder, log *slog.Logger) {
+func backgroundTasks(ctx context.Context, eng *enroll.Engine, loader *ebpfloader.Loader, tbl *proctable.Table, cfg config.Config, polHolder *policy.Holder, enforcer *ebpfloader.EnforcerLoader, log *slog.Logger) {
 	snapEvery := time.Duration(cfg.Report.SnapshotSec) * time.Second
 	if snapEvery <= 0 {
 		snapEvery = time.Hour
@@ -219,7 +257,7 @@ func backgroundTasks(ctx context.Context, eng *enroll.Engine, loader *ebpfloader
 
 	var reload *time.Ticker
 	var reloadCh <-chan time.Time
-	if cfg.Policy.Enabled && polHolder != nil && cfg.Policy.ReloadSec > 0 {
+	if cfg.Policy.Active() && polHolder != nil && cfg.Policy.ReloadSec > 0 {
 		reloadEvery := time.Duration(cfg.Policy.ReloadSec) * time.Second
 		reload = time.NewTicker(reloadEvery)
 		defer reload.Stop()
@@ -243,12 +281,12 @@ func backgroundTasks(ctx context.Context, eng *enroll.Engine, loader *ebpfloader
 		case <-prune.C:
 			tbl.Prune(2 * time.Minute)
 		case <-reloadCh:
-			reloadPolicy(cfg, polHolder, log)
+			reloadPolicy(cfg, polHolder, enforcer, log)
 		}
 	}
 }
 
-func reloadPolicy(cfg config.Config, holder *policy.Holder, log *slog.Logger) {
+func reloadPolicy(cfg config.Config, holder *policy.Holder, enforcer *ebpfloader.EnforcerLoader, log *slog.Logger) {
 	pub, err := policy.LoadPublicKey(cfg.Policy.PubKeyPath)
 	if err != nil {
 		log.Warn("policy reload: load pubkey", "err", err)
@@ -264,10 +302,40 @@ func reloadPolicy(cfg config.Config, holder *policy.Holder, log *slog.Logger) {
 		log.Warn("policy reload: load current", "err", err)
 		return
 	}
-	prev, _ := holder.Get()
+	prev, prevMeta := holder.Get()
 	if prev != nil && prev.Version == cp.Version {
 		return
 	}
+	if enforcer != nil {
+		stats, err := applyLivePolicy(enforcer, cp, true, log)
+		if err != nil {
+			log.Warn("policy reload: kernel map load failed, keeping previous policy", "err", err)
+			if prev == nil {
+				return
+			}
+			if _, restoreErr := applyLivePolicy(enforcer, prev, true, log); restoreErr != nil {
+				log.Error("policy reload: failed to restore previous kernel maps", "err", restoreErr)
+				return
+			}
+			log.Info("policy reload: restored previous kernel maps", "version", prevMeta.Version)
+			return
+		}
+		log.Info("policy reload: kernel maps updated", "stats", stats)
+	}
 	holder.Swap(cp, meta)
 	log.Info("policy reloaded", "version", meta.Version, "live_rules", len(cp.Live), "shadow_rules", len(cp.Shadow))
+}
+
+func applyLivePolicy(enforcer *ebpfloader.EnforcerLoader, cp *policy.CompiledPolicy, active bool, log *slog.Logger) (policy.LoadStats, error) {
+	stats, err := enforcer.LoadLivePolicy(cp, policy.PolicyCtrlValues{
+		EnforcementActive: active,
+		PolicyVersion:     uint32(cp.Version),
+	})
+	if err != nil {
+		return stats, err
+	}
+	if stats.Skipped > 0 {
+		log.Warn("kernel map load skipped rules with uid/binary/cgroup predicates", "skipped", stats.Skipped)
+	}
+	return stats, nil
 }

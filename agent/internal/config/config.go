@@ -35,13 +35,37 @@ type ModeBConfig struct {
 	FingerprintsPath string `yaml:"fingerprints_path"`
 }
 
-// PolicyConfig controls P2 shadow-mode evaluation (log-only; no enforcement).
+// Policy mode values (P3 config 12C).
+const (
+	PolicyModeOff     = "off"
+	PolicyModeShadow  = "shadow"
+	PolicyModeEnforce = "enforce"
+)
+
+// PolicyConfig controls policy evaluation and optional kernel enforcement.
 type PolicyConfig struct {
-	Enabled    bool   `yaml:"enabled"`
+	Mode       string `yaml:"mode"`    // off|shadow|enforce (preferred)
+	Enabled    bool   `yaml:"enabled"` // deprecated P2 alias: true → shadow when mode is empty
 	StorePath  string `yaml:"store_path"`
 	PubKeyPath string `yaml:"pub_key_path"`
 	ReloadSec  int    `yaml:"reload_sec"` // poll interval; default 15
 	Scope      string `yaml:"scope"`      // optional override for agent_scope matching
+}
+
+// EffectiveMode returns the normalized policy mode. Empty mode with enabled:true maps to shadow.
+func (p PolicyConfig) EffectiveMode() string {
+	if p.Mode != "" {
+		return p.Mode
+	}
+	if p.Enabled {
+		return PolicyModeShadow
+	}
+	return PolicyModeOff
+}
+
+// Active reports whether policy loading and evaluation should run.
+func (p PolicyConfig) Active() bool {
+	return p.EffectiveMode() != PolicyModeOff
 }
 
 // ActionsConfig controls per-agent file/network action capture.
@@ -145,8 +169,14 @@ func (c Config) validate() error {
 	if !c.ModeA.Enabled && !c.ModeB.Enabled {
 		return fmt.Errorf("at least one of mode_a/mode_b must be enabled")
 	}
-	if c.Policy.Enabled && c.Policy.PubKeyPath == "" {
-		return fmt.Errorf("policy.enabled requires policy.pub_key_path")
+	mode := c.Policy.EffectiveMode()
+	switch mode {
+	case PolicyModeOff, PolicyModeShadow, PolicyModeEnforce:
+	default:
+		return fmt.Errorf("policy.mode must be off|shadow|enforce, got %q", mode)
+	}
+	if mode != PolicyModeOff && c.Policy.PubKeyPath == "" {
+		return fmt.Errorf("policy.mode %s requires policy.pub_key_path", mode)
 	}
 	if c.Policy.ReloadSec < 0 {
 		return fmt.Errorf("policy.reload_sec must be >= 0")

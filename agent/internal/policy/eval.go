@@ -74,6 +74,19 @@ func EvaluateActions(rules []CompiledRule, in ActionInput) (decision, ruleID, ra
 	return best.Decision, best.ID, best.Rationale, true
 }
 
+// EvaluateShadowOnly returns deny hits from shadow rules only (P3 enforce mode).
+func EvaluateShadowOnly(cp *CompiledPolicy, in ActionInput) []ShadowHit {
+	if cp == nil {
+		return nil
+	}
+	if dec, id, rat, ok := EvaluateActions(cp.Shadow, in); ok && dec == DecisionDeny {
+		return []ShadowHit{{
+			Source: ShadowSourceShadow, RuleID: id, Decision: dec, Rationale: rat,
+		}}
+	}
+	return nil
+}
+
 // EvaluateShadowAndLive returns deny hits from shadow and live rule sets.
 func EvaluateShadowAndLive(cp *CompiledPolicy, in ActionInput) []ShadowHit {
 	if cp == nil {

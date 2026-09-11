@@ -36,10 +36,10 @@ debug:
   enabled: false
   http_addr: "127.0.0.1:9230"
 
-# P2: shadow-mode policy evaluation (log-only; no enforcement).
+# Policy evaluation and optional kernel enforcement (P2 shadow / P3 enforce).
 policy:
-  enabled: false
+  mode: off          # off|shadow|enforce (enabled: true is deprecated alias for shadow)
   store_path: "./policy-store"
   pub_key_path: "policy.pub"
   reload_sec: 15
-  scope: ""   # optional override for agent_scope matching
+  scope: ""          # optional override for agent_scope matching
