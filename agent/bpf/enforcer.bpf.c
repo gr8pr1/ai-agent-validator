@@ -214,8 +214,11 @@ static __always_inline __u16 port_host(__be16 p)
 
 static __always_inline int path_len_from_d_path(long ret)
 {
-	if (ret <= 0)
+	// bpf_d_path returns strlen(path) + 1 (includes the trailing NUL).
+	// Policy LPM keys are stored without the NUL (see pathPatternToLPM).
+	if (ret <= 1)
 		return -1;
+	ret--;
 	if (ret >= MAX_PATH)
 		return MAX_PATH - 1;
 	return (int)ret;

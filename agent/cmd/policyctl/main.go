@@ -234,6 +234,7 @@ func cmdRollback(args []string) error {
 func cmdShow(args []string) error {
 	fs := flag.NewFlagSet("show", flag.ExitOnError)
 	storePath := fs.String("store", "./policy-store", "version store directory")
+	summaryOnly := fs.Bool("summary", false, "print live/shadow rule id summary only")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -270,6 +271,11 @@ func cmdShow(args []string) error {
 			return err
 		}
 	}
+	if *summaryOnly {
+		fmt.Print(policy.FormatCompiledSummary(stored.Compiled))
+		return nil
+	}
+	fmt.Print(policy.FormatCompiledSummary(stored.Compiled))
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(stored.Compiled); err != nil {

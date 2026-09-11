@@ -278,6 +278,7 @@ func backgroundTasks(ctx context.Context, eng *enroll.Engine, loader *ebpfloader
 		case <-ctx.Done():
 			return
 		case <-snap.C:
+			eng.ResyncKernelTags()
 			total, enrollments, agents := eng.Stats().Snapshot()
 			drops, _ := loader.Drops()
 			log.Info("snapshot",

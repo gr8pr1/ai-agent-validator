@@ -98,6 +98,13 @@ func (e *Engine) untagKernel(pid uint32) {
 	}
 }
 
+// ResyncKernelTags rewrites every tracked tagged PID into the kernel tag map.
+func (e *Engine) ResyncKernelTags() {
+	for _, p := range e.tbl.TaggedSnapshot() {
+		e.tagKernel(p.PID)
+	}
+}
+
 func (e *Engine) handleFork(ev *event.Event, now time.Time) {
 	child := e.tbl.OnFork(ev.PID, ev.PPID, ev.Comm, now)
 	e.stats.count("fork", child.AgentID)
