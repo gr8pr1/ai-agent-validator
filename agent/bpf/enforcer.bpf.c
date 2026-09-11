@@ -598,7 +598,7 @@ static __always_inline struct pt_regs *syscall_regs(const struct pt_regs *regs)
 	return (struct pt_regs *)PT_REGS_SYSCALL_REGS(regs);
 }
 
-SEC("fmod_ret.s/__x64_sys_openat")
+SEC("fmod_ret/__x64_sys_openat")
 int BPF_PROG(enforce_openat_entry, const struct pt_regs *regs)
 {
 	struct pt_regs *sr = syscall_regs(regs);
@@ -610,7 +610,7 @@ int BPF_PROG(enforce_openat_entry, const struct pt_regs *regs)
 				   (__u32)PT_REGS_PARM3_SYSCALL(sr));
 }
 
-SEC("fmod_ret.s/__x64_sys_connect")
+SEC("fmod_ret/__x64_sys_connect")
 int BPF_PROG(enforce_connect_entry, const struct pt_regs *regs)
 {
 	struct pt_regs *sr = syscall_regs(regs);
