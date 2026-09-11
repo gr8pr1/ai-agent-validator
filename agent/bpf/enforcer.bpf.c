@@ -132,6 +132,20 @@ struct {
 } pending_connects SEC(".maps");
 
 struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct pending_open);
+} pending_open_cpu SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct pending_connect);
+} pending_connect_cpu SEC(".maps");
+
+struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 256);
 	__type(key, struct inode_key);
@@ -203,6 +217,13 @@ struct {
 	__type(value, struct lpm_key);
 } lpm_scratch SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, char[MAX_PATH]);
+} path_scratch SEC(".maps");
+
 #define STAT_FILE_OPEN    0
 #define STAT_GATE_PASS    1
 #define STAT_OPENAT_FMOD  2
@@ -248,6 +269,32 @@ static __always_inline struct lpm_key *scratch_lpm_key(void)
 	return bpf_map_lookup_elem(&lpm_scratch, &k);
 }
 
+static __always_inline char *scratch_path_buf(void)
+{
+	__u32 k = 0;
+	return bpf_map_lookup_elem(&path_scratch, &k);
+}
+
+static __always_inline int valid_path_len(__u16 len)
+{
+	return len > 0 && len < MAX_PATH;
+}
+
+static __always_inline int copy_path_bounded(char *dst, const char *src, __u16 src_len)
+{
+	int i, len;
+
+	if (!dst || !src || !valid_path_len(src_len))
+		return -1;
+	len = src_len;
+	for (i = 0; i < MAX_PATH; i++) {
+		if (i >= len)
+			break;
+		dst[i] = src[i];
+	}
+	return len;
+}
+
 static __always_inline void stat_inc(__u32 idx)
 {
 	__u64 *v = bpf_map_lookup_elem(&enforce_stats, &idx);
@@ -263,13 +310,17 @@ static __always_inline __u16 port_host(__be16 p)
 static __always_inline struct path_rule *path_lpm_lookup(void *map, const char *path, int len)
 {
 	struct lpm_key *key = scratch_lpm_key();
+	int i;
 
 	if (!key || !path || len <= 0 || len >= MAX_PATH)
 		return NULL;
 	__builtin_memset(key, 0, sizeof(*key));
 	key->prefixlen = (__u32)len * 8;
-	if (bpf_probe_read_kernel(key->data, len, path) != 0)
-		return NULL;
+	for (i = 0; i < MAX_PATH; i++) {
+		if (i >= len)
+			break;
+		key->data[i] = path[i];
+	}
 	return bpf_map_lookup_elem(map, key);
 }
 
@@ -335,11 +386,6 @@ static __always_inline struct path_rule *inode_rule_lookup(void *map, struct fil
 	return bpf_map_lookup_elem(map, &ikey);
 }
 
-static __always_inline int valid_path_len(__u16 len)
-{
-	return len > 0 && len < MAX_PATH;
-}
-
 static __always_inline int enforce_path(char *path, int len, __u8 verdict, int write_intent)
 {
 	struct path_rule *deny_rule, *allow_rule;
@@ -363,21 +409,15 @@ static __always_inline int pending_open_load(struct pending_open *po, struct pen
 
 static __always_inline int enforce_path_staged(struct pending_open *staged, __u8 verdict, int write_intent)
 {
+	char *path = scratch_path_buf();
 	int len;
 
-	if (!staged || !valid_path_len(staged->len))
+	if (!staged || !path)
 		return 0;
-	len = staged->len;
-	return enforce_path(staged->path, len, verdict, write_intent);
-}
-
-static __always_inline int pending_connect_load(struct pending_connect *pc, struct pending_connect *staged)
-{
-	if (!pc || !staged)
+	len = copy_path_bounded(path, staged->path, staged->len);
+	if (len < 0)
 		return 0;
-	if (bpf_probe_read_kernel(staged, sizeof(*staged), pc) != 0)
-		return 0;
-	return staged->ip_len == 4 || staged->ip_len == 16;
+	return enforce_path(path, len, verdict, write_intent);
 }
 
 static __always_inline struct path_rule *ip_lpm_lookup(void *map, __u8 *ip, int ip_len)
@@ -608,15 +648,22 @@ int BPF_PROG(enforce_socket_connect, struct socket *sock, struct sockaddr *addre
 static __always_inline int enforce_openat_from_pending(__u32 pid)
 {
 	struct pending_open *po;
-	struct pending_open staged = {};
-	int write_intent, rc;
+	char *path;
+	int write_intent, rc, len;
+	__u32 k = 0;
 
-	po = bpf_map_lookup_elem(&pending_open_paths, &pid);
-	if (!po || !pending_open_load(po, &staged))
+	(void)pid;
+	po = bpf_map_lookup_elem(&pending_open_cpu, &k);
+	path = scratch_path_buf();
+	if (!po || !path || !valid_path_len(po->len))
 		return 0;
 
-	write_intent = (staged.open_flags & O_ACCMODE) != 0;
-	rc = enforce_path_staged(&staged, VERDICT_OPEN, write_intent);
+	len = copy_path_bounded(path, po->path, po->len);
+	if (len < 0)
+		return 0;
+
+	write_intent = (po->open_flags & O_ACCMODE) != 0;
+	rc = enforce_path(path, len, VERDICT_OPEN, write_intent);
 	if (rc)
 		stat_inc(STAT_OPENAT_DENY);
 	return rc;
@@ -625,14 +672,18 @@ static __always_inline int enforce_openat_from_pending(__u32 pid)
 static __always_inline int enforce_connect_from_pending(__u32 pid)
 {
 	struct pending_connect *pc;
-	struct pending_connect staged = {};
-	int rc;
+	int rc, ip_len;
+	__u32 k = 0;
 
-	pc = bpf_map_lookup_elem(&pending_connects, &pid);
-	if (!pc || !pending_connect_load(pc, &staged))
+	(void)pid;
+	pc = bpf_map_lookup_elem(&pending_connect_cpu, &k);
+	if (!pc)
+		return 0;
+	ip_len = pc->ip_len;
+	if (ip_len != 4 && ip_len != 16)
 		return 0;
 
-	rc = enforce_connect_parsed(staged.ip, staged.ip_len, staged.port);
+	rc = enforce_connect_parsed(pc->ip, ip_len, pc->port);
 	if (rc)
 		stat_inc(STAT_CONNECT_DENY);
 	return rc;

@@ -127,10 +127,22 @@ func main() {
 			log.Error("enroll pending_connects map missing; cannot wire kernel enforcement")
 			os.Exit(1)
 		}
+		pendingOpenCPUMap := loader.PendingOpenCPUMap()
+		if pendingOpenCPUMap == nil {
+			log.Error("enroll pending_open_cpu map missing; cannot wire kernel enforcement")
+			os.Exit(1)
+		}
+		pendingConnectCPUMap := loader.PendingConnectCPUMap()
+		if pendingConnectCPUMap == nil {
+			log.Error("enroll pending_connect_cpu map missing; cannot wire kernel enforcement")
+			os.Exit(1)
+		}
 		enforcer, err = ebpfloader.LoadEnforcer(enforcerObject, map[string]*ebpf.Map{
-			"tagged_pids":        tagMap,
-			"pending_open_paths": pendingOpenMap,
-			"pending_connects":   pendingConnectMap,
+			"tagged_pids":         tagMap,
+			"pending_open_paths":  pendingOpenMap,
+			"pending_connects":    pendingConnectMap,
+			"pending_open_cpu":    pendingOpenCPUMap,
+			"pending_connect_cpu": pendingConnectCPUMap,
 		})
 		if err != nil {
 			log.Error("loading enforcer BPF", "err", err)

@@ -103,6 +103,22 @@ func (l *Loader) PendingConnectsMap() *ebpf.Map {
 	return l.coll.Maps["pending_connects"]
 }
 
+// PendingOpenCPUMap returns the per-CPU openat staging map for fmod_ret hooks.
+func (l *Loader) PendingOpenCPUMap() *ebpf.Map {
+	if l.coll == nil {
+		return nil
+	}
+	return l.coll.Maps["pending_open_cpu"]
+}
+
+// PendingConnectCPUMap returns the per-CPU connect staging map for fmod_ret hooks.
+func (l *Loader) PendingConnectCPUMap() *ebpf.Map {
+	if l.coll == nil {
+		return nil
+	}
+	return l.coll.Maps["pending_connect_cpu"]
+}
+
 // TagPID marks pid in the advisory kernel tag map.
 func (l *Loader) TagPID(pid uint32) error {
 	m, ok := l.coll.Maps["tagged_pids"]

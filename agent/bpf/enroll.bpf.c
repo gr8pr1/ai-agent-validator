@@ -139,6 +139,21 @@ struct {
 	__type(value, struct pending_connect);
 } pending_connects SEC(".maps");
 
+// Per-CPU staging for fmod_ret hooks (verifier-safe direct access on this CPU).
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct pending_open);
+} pending_open_cpu SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct pending_connect);
+} pending_connect_cpu SEC(".maps");
+
 static __always_inline void inc_drop(void)
 {
 	__u32 k = 0;
@@ -350,8 +365,12 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx)
 		__builtin_memcpy(d->addr, &sin.sin_addr, 4);
 		pc.port = d->dport;
 		pc.ip_len = 4;
-		if (bpf_probe_read_kernel(pc.ip, 4, &sin.sin_addr) == 0)
+		if (bpf_probe_read_kernel(pc.ip, 4, &sin.sin_addr) == 0) {
+			__u32 zero = 0;
+
 			bpf_map_update_elem(&pending_connects, &pid, &pc, BPF_ANY);
+			bpf_map_update_elem(&pending_connect_cpu, &zero, &pc, BPF_ANY);
+		}
 	} else {
 		struct sockaddr_in6_simple sin6;
 		struct pending_connect pc = {};
@@ -362,8 +381,12 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx)
 		__builtin_memcpy(d->addr, sin6.sin6_addr, 16);
 		pc.port = d->dport;
 		pc.ip_len = 16;
-		if (bpf_probe_read_kernel(pc.ip, 16, sin6.sin6_addr) == 0)
+		if (bpf_probe_read_kernel(pc.ip, 16, sin6.sin6_addr) == 0) {
+			__u32 zero = 0;
+
 			bpf_map_update_elem(&pending_connects, &pid, &pc, BPF_ANY);
+			bpf_map_update_elem(&pending_connect_cpu, &zero, &pc, BPF_ANY);
+		}
 	}
 
 	emit_action(b);
@@ -403,8 +426,12 @@ int handle_openat(struct trace_event_raw_sys_enter *ctx)
 		if (path_len > 0) {
 			po.len = (__u16)path_len;
 			po.open_flags = flags;
-			if (bpf_probe_read_kernel(po.path, path_len, path_buf) == 0)
+			if (bpf_probe_read_kernel(po.path, path_len, path_buf) == 0) {
+				__u32 zero = 0;
+
 				bpf_map_update_elem(&pending_open_paths, &pid, &po, BPF_ANY);
+				bpf_map_update_elem(&pending_open_cpu, &zero, &po, BPF_ANY);
+			}
 		}
 	}
 
