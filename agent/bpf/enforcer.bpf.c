@@ -282,17 +282,11 @@ static __always_inline int valid_path_len(__u16 len)
 
 static __always_inline int copy_path_bounded(char *dst, const char *src, __u16 src_len)
 {
-	int i, len;
-
 	if (!dst || !src || !valid_path_len(src_len))
 		return -1;
-	len = src_len;
-	for (i = 0; i < MAX_PATH; i++) {
-		if (i >= len)
-			break;
-		dst[i] = src[i];
-	}
-	return len;
+	if (bpf_probe_read_kernel(dst, MAX_PATH - 1, src) != 0)
+		return -1;
+	return src_len;
 }
 
 static __always_inline void stat_inc(__u32 idx)
@@ -310,17 +304,13 @@ static __always_inline __u16 port_host(__be16 p)
 static __always_inline struct path_rule *path_lpm_lookup(void *map, const char *path, int len)
 {
 	struct lpm_key *key = scratch_lpm_key();
-	int i;
 
 	if (!key || !path || len <= 0 || len >= MAX_PATH)
 		return NULL;
 	__builtin_memset(key, 0, sizeof(*key));
 	key->prefixlen = (__u32)len * 8;
-	for (i = 0; i < MAX_PATH; i++) {
-		if (i >= len)
-			break;
-		key->data[i] = path[i];
-	}
+	if (bpf_probe_read_kernel(key->data, MAX_PATH - 1, path) != 0)
+		return NULL;
 	return bpf_map_lookup_elem(map, key);
 }
 
@@ -396,28 +386,6 @@ static __always_inline int enforce_path(char *path, int len, __u8 verdict, int w
 	deny_rule = path_lpm_lookup(&path_deny, path, len);
 	allow_rule = path_lpm_lookup(&path_allow, path, len);
 	return enforce_open_verdict(deny_rule, allow_rule, verdict, write_intent);
-}
-
-static __always_inline int pending_open_load(struct pending_open *po, struct pending_open *staged)
-{
-	if (!po || !staged)
-		return 0;
-	if (bpf_probe_read_kernel(staged, sizeof(*staged), po) != 0)
-		return 0;
-	return valid_path_len(staged->len);
-}
-
-static __always_inline int enforce_path_staged(struct pending_open *staged, __u8 verdict, int write_intent)
-{
-	char *path = scratch_path_buf();
-	int len;
-
-	if (!staged || !path)
-		return 0;
-	len = copy_path_bounded(path, staged->path, staged->len);
-	if (len < 0)
-		return 0;
-	return enforce_path(path, len, verdict, write_intent);
 }
 
 static __always_inline struct path_rule *ip_lpm_lookup(void *map, __u8 *ip, int ip_len)
@@ -563,48 +531,26 @@ static __always_inline int enforce_connect(struct sockaddr *address, int addrlen
 	return enforce_connect_parsed(ip, ip_len, port);
 }
 
-// file_open matches paths staged by enroll sys_enter_openat (pending_open_paths).
-// bpf_d_path is not used here: it fails verifier on kernel 6.8 and did not
-// resolve reliably in this LSM hook context anyway.
+// file_open: inode deny/allow only when bpf LSM is active. Path rules are enforced
+// by fmod_ret/__x64_sys_openat (primary on hosts without bpf in the LSM stack).
 SEC("lsm/file_open")
 int BPF_PROG(enforce_file_open, struct file *file)
 {
-	__u32 pid = bpf_get_current_pid_tgid() >> 32;
-	struct pending_open *po;
-	struct pending_open staged = {};
 	struct path_rule *deny_rule, *allow_rule;
 	__u32 f_flags;
-	int write_intent, rc, have_staged = 0;
+	int write_intent;
 
 	stat_inc(STAT_FILE_OPEN);
 	if (!enforce_gate())
 		return 0;
 	stat_inc(STAT_GATE_PASS);
 
-	po = bpf_map_lookup_elem(&pending_open_paths, &pid);
-	if (po && pending_open_load(po, &staged))
-		have_staged = 1;
-
-	if (have_staged)
-		write_intent = (staged.open_flags & O_ACCMODE) != 0;
-	else {
-		f_flags = BPF_CORE_READ(file, f_flags);
-		write_intent = (f_flags & O_ACCMODE) != 0;
-	}
+	f_flags = BPF_CORE_READ(file, f_flags);
+	write_intent = (f_flags & O_ACCMODE) != 0;
 
 	deny_rule = inode_rule_lookup(&inode_deny, file);
 	allow_rule = inode_rule_lookup(&inode_allow, file);
-	rc = enforce_open_verdict(deny_rule, allow_rule, VERDICT_OPEN, write_intent);
-	if (rc)
-		goto out;
-
-	if (have_staged)
-		rc = enforce_path_staged(&staged, VERDICT_OPEN, write_intent);
-
-out:
-	if (have_staged)
-		bpf_map_delete_elem(&pending_open_paths, &pid);
-	return rc;
+	return enforce_open_verdict(deny_rule, allow_rule, VERDICT_OPEN, write_intent);
 }
 
 // Unlink/rename path resolution deferred; open/connect enforcement covers v1 bundle.
