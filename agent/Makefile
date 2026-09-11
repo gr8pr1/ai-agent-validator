@@ -1,8 +1,14 @@
 .PHONY: all bpf build build-policyctl test vet clean run policy-test
 
 CLANG       ?= $(shell which clang 2>/dev/null || echo /usr/bin/clang)
+UNAME_M     := $(shell uname -m)
 BPF_INCLUDE ?= $(shell if [ -d /usr/include/bpf ]; then echo "-I/usr/include"; elif [ -d /usr/local/include/bpf ]; then echo "-I/usr/local/include"; fi)
-BPF_CFLAGS  ?= -O2 -g -Wall -target bpf $(BPF_INCLUDE)
+ifeq ($(UNAME_M),x86_64)
+BPF_ARCH_CFLAGS := -D__TARGET_ARCH_x86
+else ifeq ($(UNAME_M),aarch64)
+BPF_ARCH_CFLAGS := -D__TARGET_ARCH_arm64
+endif
+BPF_CFLAGS  ?= -O2 -g -Wall -target bpf $(BPF_INCLUDE) $(BPF_ARCH_CFLAGS)
 BINARY      ?= aiblocker-agent
 POLICYCTL   ?= policyctl
 

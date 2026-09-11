@@ -189,6 +189,28 @@ struct {
 	__type(value, struct lpm_key);
 } lpm_scratch SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, char[MAX_PATH]);
+} path_scratch SEC(".maps");
+
+#define STAT_FILE_OPEN    0
+#define STAT_GATE_PASS    1
+#define STAT_OPENAT_FMOD  2
+#define STAT_OPENAT_DENY  3
+#define STAT_CONNECT_FMOD 4
+#define STAT_CONNECT_DENY 5
+#define STAT_ENFORCE_MAX  6
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, STAT_ENFORCE_MAX);
+	__type(key, __u32);
+	__type(value, __u64);
+} enforce_stats SEC(".maps");
+
 static __always_inline int is_enforcement_active(void)
 {
 	__u32 k = 0;
@@ -217,6 +239,29 @@ static __always_inline struct lpm_key *scratch_lpm_key(void)
 {
 	__u32 k = 0;
 	return bpf_map_lookup_elem(&lpm_scratch, &k);
+}
+
+static __always_inline char *scratch_path(void)
+{
+	__u32 k = 0;
+	return bpf_map_lookup_elem(&path_scratch, &k);
+}
+
+static __always_inline void stat_inc(__u32 idx)
+{
+	__u64 *v = bpf_map_lookup_elem(&enforce_stats, &idx);
+	if (v)
+		__sync_fetch_and_add(v, 1);
+}
+
+static __always_inline int path_len_from_user_str(long ret)
+{
+	if (ret <= 1)
+		return -1;
+	ret--;
+	if (ret >= MAX_PATH)
+		return MAX_PATH - 1;
+	return (int)ret;
 }
 
 static __always_inline __u16 port_host(__be16 p)
@@ -456,8 +501,10 @@ int BPF_PROG(enforce_file_open, struct file *file)
 	__u32 f_flags;
 	int write_intent, rc;
 
+	stat_inc(STAT_FILE_OPEN);
 	if (!enforce_gate())
 		return 0;
+	stat_inc(STAT_GATE_PASS);
 
 	po = bpf_map_lookup_elem(&pending_open_paths, &pid);
 	if (po && po->len > 0)
@@ -514,3 +561,55 @@ int BPF_PROG(enforce_socket_connect, struct socket *sock, struct sockaddr *addre
 		return 0;
 	return enforce_connect(address, addrlen);
 }
+
+// Syscall fmod_ret hooks block at entry and do not depend on bpf being in the
+// active LSM list (AttachLSM can succeed while hooks never run without lsm=...,bpf).
+#if defined(__TARGET_ARCH_x86) || defined(bpf_target_x86)
+static __always_inline int enforce_openat_path(const char *path, __u32 flags)
+{
+	char *buf = scratch_path();
+	int len, write_intent, rc;
+
+	if (!buf || !path)
+		return 0;
+
+	len = path_len_from_user_str(bpf_probe_read_user_str(buf, MAX_PATH, path));
+	if (len <= 0)
+		return 0;
+
+	write_intent = (flags & O_ACCMODE) != 0;
+	rc = enforce_path(buf, len, VERDICT_OPEN, write_intent);
+	if (rc)
+		stat_inc(STAT_OPENAT_DENY);
+	return rc;
+}
+
+static __always_inline int enforce_connect_syscall(struct sockaddr *addr, int addrlen)
+{
+	int rc = enforce_connect(addr, addrlen);
+
+	if (rc)
+		stat_inc(STAT_CONNECT_DENY);
+	return rc;
+}
+
+SEC("fmod_ret/__x64_sys_openat")
+int BPF_PROG(enforce_openat_entry, const struct pt_regs *regs)
+{
+	stat_inc(STAT_OPENAT_FMOD);
+	if (!enforce_gate())
+		return 0;
+	return enforce_openat_path((const char *)PT_REGS_PARM2_CORE(regs),
+				   (__u32)PT_REGS_PARM3_CORE(regs));
+}
+
+SEC("fmod_ret/__x64_sys_connect")
+int BPF_PROG(enforce_connect_entry, const struct pt_regs *regs)
+{
+	stat_inc(STAT_CONNECT_FMOD);
+	if (!enforce_gate())
+		return 0;
+	return enforce_connect_syscall((struct sockaddr *)PT_REGS_PARM2_CORE(regs),
+				       (int)PT_REGS_PARM3_CORE(regs));
+}
+#endif

@@ -24,6 +24,34 @@ var lsmPrograms = []lsmProgram{
 	{name: "enforce_socket_connect"},
 }
 
+// enforceStatCount must match STAT_ENFORCE_MAX in enforcer.bpf.c.
+const enforceStatCount = 6
+
+const (
+	enforceStatFileOpen = iota
+	enforceStatGatePass
+	enforceStatOpenatFmod
+	enforceStatOpenatDeny
+	enforceStatConnectFmod
+	enforceStatConnectDeny
+)
+
+// syscallPrograms are optional fmod_ret hooks (x86_64 only in the BPF object).
+var syscallPrograms = []string{
+	"enforce_openat_entry",
+	"enforce_connect_entry",
+}
+
+// EnforceStats aggregates per-CPU enforce_stats counters from the enforcer.
+type EnforceStats struct {
+	FileOpenCalls  uint64
+	GatePass       uint64
+	OpenatFmod     uint64
+	OpenatDeny     uint64
+	ConnectFmod    uint64
+	ConnectDeny    uint64
+}
+
 // PolicyCtrl is the userspace view of the policy_ctrl BPF map value.
 type PolicyCtrl struct {
 	EnforcementActive uint8
@@ -57,6 +85,27 @@ func LoadEnforcer(obj []byte, replacements map[string]*ebpf.Map) (*EnforcerLoade
 		return nil, fmt.Errorf("new enforcer collection: %w", err)
 	}
 	return &EnforcerLoader{coll: coll}, nil
+}
+
+// AttachSyscallEnforcement links fmod_ret syscall programs when present in the object.
+func (l *EnforcerLoader) AttachSyscallEnforcement() ([]string, error) {
+	var attached []string
+	for _, name := range syscallPrograms {
+		prog, ok := l.coll.Programs[name]
+		if !ok {
+			continue
+		}
+		lnk, err := link.AttachTracing(link.TracingOptions{
+			Program:    prog,
+			AttachType: ebpf.AttachModifyReturn,
+		})
+		if err != nil {
+			return attached, fmt.Errorf("attach fmod_ret %s: %w", name, err)
+		}
+		l.links = append(l.links, lnk)
+		attached = append(attached, "fmod_ret/"+name)
+	}
+	return attached, nil
 }
 
 // AttachLSM links every LSM program. Requires CONFIG_BPF_LSM and lsm=...,bpf.
@@ -154,6 +203,31 @@ func (l *EnforcerLoader) EnforcerMaps() policy.EnforcerMapSet {
 // LoadLivePolicy loads enforced rules into kernel maps (P3.2).
 func (l *EnforcerLoader) LoadLivePolicy(cp *policy.CompiledPolicy, ctrl policy.PolicyCtrlValues) (policy.LoadStats, error) {
 	return policy.LoadLive(cp, l.EnforcerMaps(), ctrl)
+}
+
+// EnforceStats reads and sums per-CPU enforce_stats counters.
+func (l *EnforcerLoader) EnforceStats() (EnforceStats, error) {
+	m, ok := l.coll.Maps["enforce_stats"]
+	if !ok {
+		return EnforceStats{}, fmt.Errorf("enforce_stats map not found")
+	}
+	var totals [enforceStatCount]uint64
+	it := m.Iterate()
+	var k uint32
+	var v uint64
+	for it.Next(&k, &v) {
+		if k < enforceStatCount {
+			totals[k] += v
+		}
+	}
+	return EnforceStats{
+		FileOpenCalls: totals[enforceStatFileOpen],
+		GatePass:      totals[enforceStatGatePass],
+		OpenatFmod:    totals[enforceStatOpenatFmod],
+		OpenatDeny:    totals[enforceStatOpenatDeny],
+		ConnectFmod:   totals[enforceStatConnectFmod],
+		ConnectDeny:   totals[enforceStatConnectDeny],
+	}, nil
 }
 
 // Close detaches LSM links and releases the collection.

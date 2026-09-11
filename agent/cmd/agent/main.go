@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"os/signal"
 	"sync"
 	"syscall"
@@ -130,6 +131,18 @@ func main() {
 			os.Exit(1)
 		}
 		defer enforcer.Close()
+		bpfInLSM := logKernelLSMStack(log)
+		syscallAttached, err := enforcer.AttachSyscallEnforcement()
+		if err != nil {
+			log.Error("attaching syscall fmod_ret enforcer", "err", err)
+			os.Exit(1)
+		}
+		if len(syscallAttached) > 0 {
+			log.Info("attached syscall enforcer", "programs", syscallAttached)
+		} else if !bpfInLSM {
+			log.Error("no enforcement hooks active: fmod_ret programs missing from BPF object and bpf is not in the kernel LSM stack")
+			os.Exit(1)
+		}
 		lsmAttached, err := enforcer.AttachLSM()
 		if err != nil {
 			log.Error("attaching LSM enforcer (requires root and CONFIG_BPF_LSM)", "err", err)
@@ -287,9 +300,12 @@ func backgroundTasks(ctx context.Context, eng *enroll.Engine, loader *ebpfloader
 			eng.ResyncKernelTags()
 			total, enrollments, agents := eng.Stats().Snapshot()
 			drops, _ := loader.Drops()
-			log.Info("snapshot",
+			fields := []any{
 				"total_events", total, "enrollments", enrollments,
-				"tagged_agents", len(agents), "tracked_pids", tbl.Len(), "ringbuf_drops", drops)
+				"tagged_agents", len(agents), "tracked_pids", tbl.Len(), "ringbuf_drops", drops,
+			}
+			fields = append(fields, enforceSnapshotFields(enforcer)...)
+			log.Info("snapshot", fields...)
 			for _, a := range agents {
 				log.Info("agent", "id", a.AgentID, "exec", a.Exec, "fork", a.Fork, "exit", a.Exit,
 					"connect", a.Connect, "open", a.Open, "unlink", a.Unlink, "rename", a.Rename)
@@ -363,4 +379,48 @@ func applyLivePolicy(enforcer *ebpfloader.EnforcerLoader, cp *policy.CompiledPol
 		log.Warn("kernel enforcement maps are empty despite live rules; ensure rules use state: enforced and kernel-loadable predicates")
 	}
 	return stats, nil
+}
+
+func logKernelLSMStack(log *slog.Logger) bool {
+	lsmList, err := os.ReadFile("/sys/kernel/security/lsm")
+	if err != nil {
+		return false
+	}
+	active := strings.TrimSpace(string(lsmList))
+	if active == "" {
+		return false
+	}
+	log.Info("kernel LSM stack", "lsm", active)
+	bpfActive := stringsContainsLSM(active, "bpf")
+	if !bpfActive {
+		log.Warn("bpf is not in the active LSM stack; LSM hooks may not run (add lsm=...,bpf at boot). Syscall fmod_ret hooks are the primary block path.")
+	}
+	return bpfActive
+}
+
+func enforceSnapshotFields(enforcer *ebpfloader.EnforcerLoader) []any {
+	if enforcer == nil {
+		return nil
+	}
+	est, err := enforcer.EnforceStats()
+	if err != nil {
+		return nil
+	}
+	return []any{
+		"enforce_file_open", est.FileOpenCalls,
+		"enforce_gate_pass", est.GatePass,
+		"enforce_openat_fmod", est.OpenatFmod,
+		"enforce_openat_deny", est.OpenatDeny,
+		"enforce_connect_fmod", est.ConnectFmod,
+		"enforce_connect_deny", est.ConnectDeny,
+	}
+}
+
+func stringsContainsLSM(lsmList, name string) bool {
+	for _, part := range strings.Split(lsmList, ",") {
+		if strings.TrimSpace(part) == name {
+			return true
+		}
+	}
+	return false
 }

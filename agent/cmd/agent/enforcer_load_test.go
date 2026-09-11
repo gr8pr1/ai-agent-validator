@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"runtime"
 	"testing"
 
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/ebpfloader"
@@ -22,6 +23,14 @@ func TestEnforcerBPFSkeleton(t *testing.T) {
 		t.Fatalf("load enforcer BPF: %v", err)
 	}
 	defer loader.Close()
+
+	syscallAttached, err := loader.AttachSyscallEnforcement()
+	if err != nil {
+		t.Fatalf("attach syscall fmod_ret: %v", err)
+	}
+	if runtime.GOARCH == "amd64" && len(syscallAttached) < 2 {
+		t.Fatalf("expected fmod_ret openat+connect on amd64, got %d: %v", len(syscallAttached), syscallAttached)
+	}
 
 	attached, err := loader.AttachLSM()
 	if err != nil {
