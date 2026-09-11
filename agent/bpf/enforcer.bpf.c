@@ -541,18 +541,20 @@ static __always_inline int enforce_connect(struct sockaddr *address, int addrlen
 
 static __always_inline __u16 cgroup_user_port(__u32 user_port)
 {
-	return port_host((__be16)(user_port >> 16));
+	// ctx->user_port is network byte order; port occupies the low 16 bits.
+	return port_host((__be16)user_port);
 }
 
+// Cgroup/connect return semantics (unlike fmod_ret -EPERM): 1 = allow, 0 = deny.
 static __always_inline int cgroup_connect_action(__u8 *ip, int ip_len, __u16 port)
 {
 	int rc = enforce_connect_parsed(ip, ip_len, port);
 
 	if (rc) {
 		stat_inc(STAT_CONNECT_DENY);
-		return 1;
+		return 0;
 	}
-	return 0;
+	return 1;
 }
 
 static __always_inline __u32 u32_ntoh(__u32 be)
@@ -582,10 +584,10 @@ int enforce_cgroup_connect4(struct bpf_sock_addr *ctx)
 	ip4 = ctx->user_ip4;
 	user_port = ctx->user_port;
 	if (!is_enforcement_active())
-		return 0;
+		return 1;
 	// Hook can run before user_ip4 is populated; do not deny on empty target.
 	if (!ip4)
-		return 0;
+		return 1;
 
 	stat_inc(STAT_CGROUP_CONNECT);
 	be32_to_ip_bytes(ip, 0, ip4);
@@ -605,9 +607,9 @@ int enforce_cgroup_connect6(struct bpf_sock_addr *ctx)
 	w3 = ctx->user_ip6[3];
 	user_port = ctx->user_port;
 	if (!is_enforcement_active())
-		return 0;
+		return 1;
 	if (!w0 && !w1 && !w2 && !w3)
-		return 0;
+		return 1;
 
 	stat_inc(STAT_CGROUP_CONNECT);
 	be32_to_ip_bytes(ip, 0, w0);
