@@ -335,11 +335,16 @@ static __always_inline struct path_rule *inode_rule_lookup(void *map, struct fil
 	return bpf_map_lookup_elem(map, &ikey);
 }
 
+static __always_inline int valid_path_len(__u16 len)
+{
+	return len > 0 && len < MAX_PATH;
+}
+
 static __always_inline int enforce_path(char *path, int len, __u8 verdict, int write_intent)
 {
 	struct path_rule *deny_rule, *allow_rule;
 
-	if (!path || len <= 0)
+	if (!path || len <= 0 || len >= MAX_PATH)
 		return 0;
 
 	deny_rule = path_lpm_lookup(&path_deny, path, len);
@@ -508,7 +513,7 @@ int BPF_PROG(enforce_file_open, struct file *file)
 	stat_inc(STAT_GATE_PASS);
 
 	po = bpf_map_lookup_elem(&pending_open_paths, &pid);
-	if (po && po->len > 0)
+	if (po && valid_path_len(po->len))
 		write_intent = (po->open_flags & O_ACCMODE) != 0;
 	else {
 		f_flags = BPF_CORE_READ(file, f_flags);
@@ -521,11 +526,11 @@ int BPF_PROG(enforce_file_open, struct file *file)
 	if (rc)
 		goto out;
 
-	if (po && po->len > 0)
+	if (po && valid_path_len(po->len))
 		rc = enforce_path(po->path, po->len, VERDICT_OPEN, write_intent);
 
 out:
-	if (po && po->len > 0)
+	if (po && valid_path_len(po->len))
 		bpf_map_delete_elem(&pending_open_paths, &pid);
 	return rc;
 }
@@ -571,14 +576,15 @@ int BPF_PROG(enforce_socket_connect, struct socket *sock, struct sockaddr *addre
 static __always_inline int enforce_openat_from_pending(__u32 pid)
 {
 	struct pending_open *po;
-	int write_intent, rc;
+	int write_intent, rc, len;
 
 	po = bpf_map_lookup_elem(&pending_open_paths, &pid);
-	if (!po || po->len <= 0)
+	if (!po || !valid_path_len(po->len))
 		return 0;
 
+	len = po->len;
 	write_intent = (po->open_flags & O_ACCMODE) != 0;
-	rc = enforce_path(po->path, po->len, VERDICT_OPEN, write_intent);
+	rc = enforce_path(po->path, len, VERDICT_OPEN, write_intent);
 	if (rc)
 		stat_inc(STAT_OPENAT_DENY);
 	return rc;
@@ -587,13 +593,16 @@ static __always_inline int enforce_openat_from_pending(__u32 pid)
 static __always_inline int enforce_connect_from_pending(__u32 pid)
 {
 	struct pending_connect *pc;
-	int rc;
+	int rc, ip_len;
 
 	pc = bpf_map_lookup_elem(&pending_connects, &pid);
-	if (!pc || pc->ip_len == 0)
+	if (!pc)
+		return 0;
+	ip_len = pc->ip_len;
+	if (ip_len != 4 && ip_len != 16)
 		return 0;
 
-	rc = enforce_connect_parsed(pc->ip, pc->ip_len, pc->port);
+	rc = enforce_connect_parsed(pc->ip, ip_len, pc->port);
 	if (rc)
 		stat_inc(STAT_CONNECT_DENY);
 	return rc;
