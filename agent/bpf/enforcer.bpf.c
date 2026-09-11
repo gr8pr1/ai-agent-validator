@@ -203,6 +203,13 @@ struct {
 	__type(value, struct lpm_key);
 } lpm_scratch SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, char[MAX_PATH]);
+} path_scratch SEC(".maps");
+
 #define STAT_FILE_OPEN    0
 #define STAT_GATE_PASS    1
 #define STAT_OPENAT_FMOD  2
@@ -246,6 +253,12 @@ static __always_inline struct lpm_key *scratch_lpm_key(void)
 {
 	__u32 k = 0;
 	return bpf_map_lookup_elem(&lpm_scratch, &k);
+}
+
+static __always_inline char *scratch_path_buf(void)
+{
+	__u32 k = 0;
+	return bpf_map_lookup_elem(&path_scratch, &k);
 }
 
 static __always_inline void stat_inc(__u32 idx)
@@ -350,6 +363,27 @@ static __always_inline int enforce_path(char *path, int len, __u8 verdict, int w
 	deny_rule = path_lpm_lookup(&path_deny, path, len);
 	allow_rule = path_lpm_lookup(&path_allow, path, len);
 	return enforce_open_verdict(deny_rule, allow_rule, verdict, write_intent);
+}
+
+// Copy staged path out of pending_open map values; verifier rejects variable
+// reads directly from hash map value pointers in fmod_ret programs.
+static __always_inline int enforce_staged_path(struct pending_open *po, __u8 verdict, int write_intent)
+{
+	char *buf;
+	int len;
+
+	if (!po || !valid_path_len(po->len))
+		return 0;
+
+	buf = scratch_path_buf();
+	if (!buf)
+		return 0;
+
+	len = po->len;
+	if (bpf_probe_read_kernel(buf, MAX_PATH - 1, po->path) != 0)
+		return 0;
+
+	return enforce_path(buf, len, verdict, write_intent);
 }
 
 static __always_inline struct path_rule *ip_lpm_lookup(void *map, __u8 *ip, int ip_len)
@@ -527,7 +561,7 @@ int BPF_PROG(enforce_file_open, struct file *file)
 		goto out;
 
 	if (po && valid_path_len(po->len))
-		rc = enforce_path(po->path, po->len, VERDICT_OPEN, write_intent);
+		rc = enforce_staged_path(po, VERDICT_OPEN, write_intent);
 
 out:
 	if (po && valid_path_len(po->len))
@@ -576,15 +610,14 @@ int BPF_PROG(enforce_socket_connect, struct socket *sock, struct sockaddr *addre
 static __always_inline int enforce_openat_from_pending(__u32 pid)
 {
 	struct pending_open *po;
-	int write_intent, rc, len;
+	int write_intent, rc;
 
 	po = bpf_map_lookup_elem(&pending_open_paths, &pid);
 	if (!po || !valid_path_len(po->len))
 		return 0;
 
-	len = po->len;
 	write_intent = (po->open_flags & O_ACCMODE) != 0;
-	rc = enforce_path(po->path, len, VERDICT_OPEN, write_intent);
+	rc = enforce_staged_path(po, VERDICT_OPEN, write_intent);
 	if (rc)
 		stat_inc(STAT_OPENAT_DENY);
 	return rc;
