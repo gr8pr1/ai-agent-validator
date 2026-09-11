@@ -552,7 +552,10 @@ static __always_inline int cgroup_connect_action(__u8 *ip, int ip_len, __u16 por
 	return 0;
 }
 
-static __always_inline int cgroup_connect4_impl(struct bpf_sock_addr *ctx)
+// Cgroup connect hooks must read bpf_sock_addr fields in the SEC function itself;
+// passing ctx into inline helpers breaks verifier context tracking on 6.8.
+SEC("cgroup/connect4")
+int enforce_cgroup_connect4(struct bpf_sock_addr *ctx)
 {
 	__u8 ip[4];
 	__u32 ip4;
@@ -570,7 +573,8 @@ static __always_inline int cgroup_connect4_impl(struct bpf_sock_addr *ctx)
 	return cgroup_connect_action(ip, 4, port);
 }
 
-static __always_inline int cgroup_connect6_impl(struct bpf_sock_addr *ctx)
+SEC("cgroup/connect6")
+int enforce_cgroup_connect6(struct bpf_sock_addr *ctx)
 {
 	__u8 ip[16];
 	__u16 port;
@@ -589,18 +593,6 @@ static __always_inline int cgroup_connect6_impl(struct bpf_sock_addr *ctx)
 	}
 	port = cgroup_user_port(ctx->user_port);
 	return cgroup_connect_action(ip, 16, port);
-}
-
-SEC("cgroup/connect4")
-int BPF_PROG(enforce_cgroup_connect4, struct bpf_sock_addr *sa)
-{
-	return cgroup_connect4_impl(sa);
-}
-
-SEC("cgroup/connect6")
-int BPF_PROG(enforce_cgroup_connect6, struct bpf_sock_addr *sa)
-{
-	return cgroup_connect6_impl(sa);
 }
 
 // file_open: inode deny/allow only when bpf LSM is active. Path rules are enforced
