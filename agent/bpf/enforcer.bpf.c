@@ -336,7 +336,7 @@ static __always_inline void emit_deny(__u8 action, __u32 rule_hash,
 	v->action = action;
 	__builtin_memset(v->path, 0, sizeof(v->path));
 	if (path && path_len > 0 && path_len < MAX_PATH)
-		bpf_probe_read_kernel(v->path, path_len, path);
+		bpf_probe_read_kernel(v->path, MAX_PATH - 1, path);
 	bpf_ringbuf_submit(v, 0);
 }
 
