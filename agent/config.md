@@ -99,18 +99,37 @@ re-checks every event against the process table before reporting.
 
 ---
 
-## `policy` — shadow-mode evaluation (P2)
-
-Log-only "would have blocked" evaluation against captured actions. **Does not
-block anything** — kernel enforcement is P3.
+## `policy` — shadow (P2) and enforce (P3)
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | bool | `false` | Enable shadow evaluation |
+| `mode` | string | `off` | `off` \| `shadow` \| `enforce` — preferred control |
+| `enabled` | bool | `false` | Deprecated alias: `true` with empty `mode` → `shadow` |
 | `store_path` | string | `./policy-store` | Policy version store (from `policyctl load`) |
-| `pub_key_path` | string | `""` | Ed25519 public key for bundle verification (required when enabled) |
+| `pub_key_path` | string | `""` | Ed25519 public key for bundle verification (required when active) |
 | `reload_sec` | int | `15` | Poll store `current` for hot reload; `0` disables polling |
 | `scope` | string | `""` | Optional override for `agent_scope` matching (default: bundle scope) |
+
+### Modes
+
+| Mode | Kernel maps | Userspace shadow | Blocks |
+|------|-------------|------------------|--------|
+| `off` | not loaded | no | no |
+| `shadow` | not loaded | yes (`shadow_deny`) | no |
+| `enforce` | yes (`state: enforced` rules) | yes | yes (`-EPERM`, `kernel_deny`) |
+
+**Enforce hooks:** tagged agents — syscall fmod_ret (`openat`, `connect` on amd64).
+Mode A cgroup (`mode_a.cgroup_contains`) — cgroup/connect4+6 for all processes in
+the slice (egress). LSM `socket_connect` attaches only when `bpf` is in the kernel
+LSM stack (`lsm=...,bpf` at boot); otherwise fmod_ret is the connect path for
+tagged processes.
+
+**Cgroup connect return codes:** `1` = allow, `0` = deny (unlike fmod_ret `-EPERM`).
+
+**Fail direction:** bundle `fail_direction: open|closed` is stored in the
+`policy_ctrl` BPF map. When `enforcement_active` is clear (e.g. during policy
+reload), `closed` denies tagged/slice traffic until maps are live again; `open`
+allows (default).
 
 When enabled, the agent loads the store's current signed bundle on startup and on
 each reload, **re-verifies the signature**, recompiles, and evaluates each captured

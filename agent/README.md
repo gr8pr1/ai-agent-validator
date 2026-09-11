@@ -1,13 +1,14 @@
 # AI Agent Validator — agent
 
 A self-contained Go + eBPF agent that enrolls AI-agent processes (Mode A cgroup /
-Mode B fingerprint), propagates the `agent_id` tag across the process tree, and
-reports tagged lifecycle and action events. **Observe-only** — it never blocks
-(P3 will add kernel enforcement).
+Mode B fingerprint), propagates the `agent_id` tag across the process tree,
+reports tagged lifecycle and action events, and **enforces signed policy in the
+kernel** when `policy.mode: enforce`.
 
 Current milestones: **P0** (enroll & observe), **P0.5** (action capture),
-**P1** (policy schema + trusted loader via `policyctl`), and **P2** (shadow-mode
-policy evaluation in userspace). See [architecture.md](../architecture.md) §13.
+**P1** (policy schema + trusted loader via `policyctl`), **P2** (shadow-mode
+evaluation in userspace), and **P3** (kernel deny via fmod_ret + Mode A cgroup
+egress). See [architecture.md](../architecture.md) §13.
 
 ## Build
 
@@ -27,7 +28,7 @@ make policy-test     # P1 loader smoke test (no root)
 The compiled BPF object is embedded via `go:embed`, so `make bpf` must run before
 `go build`/`go test` of `./cmd/agent`. The object is git-ignored and regenerated.
 
-## Run (observe agent)
+## Run
 
 eBPF load + attach needs root (CAP_BPF + CAP_PERFMON):
 
@@ -35,6 +36,25 @@ eBPF load + attach needs root (CAP_BPF + CAP_PERFMON):
 cp config.yaml.example config.yaml   # first time only
 cp fingerprints.yaml.example fingerprints.yaml   # if mode_b enabled
 sudo ./aiblocker-agent --config config.yaml
+```
+
+### Enforce mode (P3)
+
+Set `policy.mode: enforce` in `config.yaml`, load a signed bundle with `policyctl
+load`, then start the agent. Mode A processes in `mode_a.cgroup_contains` (e.g.
+`ai-agents.slice`) get egress enforcement via cgroup/connect; tagged agents also
+get open/connect enforcement via syscall fmod_ret hooks.
+
+AI agent shell (Mode A):
+
+```bash
+sudo systemd-run --slice=ai-agents.slice --pty bash
+```
+
+Enforce smoke test (root; builds temp policy + config):
+
+```bash
+sudo ./scripts/enforce-test.sh
 ```
 
 Flags (override config):
@@ -46,12 +66,14 @@ Flags (override config):
 | `--log-level` | `debug`\|`info`\|`warn`\|`error` |
 | `--log-format` | `text`\|`json` |
 
-## Policy loader (P1) + shadow mode (P2)
+## Policy loader (P1) + shadow / enforce (P2/P3)
 
 `policyctl` is a separate trusted loader for signed policy bundles. It does not
-require root. When `policy.enabled` is set in the agent config, the observe agent
-loads the current bundle from the store, re-verifies the signature, and evaluates
-captured actions against shadow and enforced rules (log-only `shadow_deny` events).
+require root. When `policy.mode` is `shadow` or `enforce`, the agent loads the
+current bundle from the store, re-verifies the signature, and evaluates captured
+actions against shadow rules (`shadow_deny` audit events). In `enforce` mode,
+`state: enforced` rules are compiled into kernel BPF maps and block matching
+actions with `-EPERM` plus `kernel_deny` audit events.
 
 See [policy.md](policy.md) and [policy.yaml.example](policy.yaml.example).
 
@@ -79,7 +101,8 @@ Enable shadow evaluation in `config.yaml` (`policy.enabled: true`, matching
 ## Output
 
 - **stdout** — one line per tagged event (`text`) or JSON (`json`). Enrollment
-  decisions are prefixed `ENROLL`; shadow verdicts are prefixed `SHADOW_DENY`.
+  decisions are prefixed `ENROLL`; shadow verdicts are prefixed `SHADOW_DENY`;
+  kernel blocks are prefixed `KERNEL_DENY` in text mode (also in audit JSONL).
 - **stderr (slog)** — startup, snapshots, warnings, and with `--debug` the
   fingerprint match trace. Set `log_file` to duplicate slog to a file.
 - **audit log** — append-only JSONL when `report.audit_log` is set. Tagged
@@ -105,6 +128,7 @@ Enable shadow evaluation in `config.yaml` (`policy.enabled: true`, matching
 |--------|---------------|------------------|
 | `./scripts/policy-test.sh` | no | P1: sign, load, rollback |
 | `./scripts/integration-test.sh` | yes | P0/P0.5: enroll + action capture |
+| `./scripts/enforce-test.sh` | yes | P3: localhost allow + egress/file deny |
 | `go test ./internal/enroll/...` | no | P2 shadow evaluation (engine_shadow_test.go) |
 | `go test ./internal/policy/...` | no | P2 evaluator + shadow-report |
 

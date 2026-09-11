@@ -422,10 +422,8 @@ func reloadPolicy(cfg config.Config, holder *policy.Holder, enforcer *ebpfloader
 }
 
 func applyLivePolicy(enforcer *ebpfloader.EnforcerLoader, cp *policy.CompiledPolicy, active bool, log *slog.Logger) (policy.LoadStats, error) {
-	if err := enforcer.SetPolicyCtrl(ebpfloader.PolicyCtrl{
-		EnforcementActive: 0,
-		PolicyVersion:     uint32(cp.Version),
-	}); err != nil {
+	deactivate := policyCtrlFromCompiled(cp, false)
+	if err := enforcer.SetPolicyCtrl(deactivate); err != nil {
 		return policy.LoadStats{}, fmt.Errorf("deactivate policy_ctrl: %w", err)
 	}
 	stats, err := enforcer.LoadLivePolicy(cp, policy.PolicyCtrlValues{
@@ -442,6 +440,25 @@ func applyLivePolicy(enforcer *ebpfloader.EnforcerLoader, cp *policy.CompiledPol
 		log.Warn("kernel enforcement maps are empty despite live rules; ensure rules use state: enforced and kernel-loadable predicates")
 	}
 	return stats, nil
+}
+
+func policyCtrlFromCompiled(cp *policy.CompiledPolicy, active bool) ebpfloader.PolicyCtrl {
+	var failClosed, defaultDeny, enforcementActive uint8
+	if active {
+		enforcementActive = 1
+	}
+	if cp.FailDirection == policy.FailDirectionClosed {
+		failClosed = 1
+	}
+	if cp.DefaultAction == policy.DefaultActionDeny {
+		defaultDeny = 1
+	}
+	return ebpfloader.PolicyCtrl{
+		EnforcementActive: enforcementActive,
+		FailClosed:        failClosed,
+		DefaultDeny:       defaultDeny,
+		PolicyVersion:     uint32(cp.Version),
+	}
 }
 
 func logKernelLSMStack(log *slog.Logger) bool {

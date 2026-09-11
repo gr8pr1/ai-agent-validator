@@ -240,13 +240,28 @@ struct {
 	__type(value, __u64);
 } enforce_stats SEC(".maps");
 
-static __always_inline int is_enforcement_active(void)
+static __always_inline struct policy_ctrl *policy_ctrl_get(void)
 {
 	__u32 k = 0;
-	struct policy_ctrl *c = bpf_map_lookup_elem(&policy_ctrl, &k);
-	if (!c)
+	return bpf_map_lookup_elem(&policy_ctrl, &k);
+}
+
+static __always_inline int enforcement_live(void)
+{
+	struct policy_ctrl *c = policy_ctrl_get();
+
+	if (!c || !c->enforcement_active)
 		return 0;
-	return c->enforcement_active != 0;
+	return 1;
+}
+
+static __always_inline int fail_closed_regime(void)
+{
+	struct policy_ctrl *c = policy_ctrl_get();
+
+	if (!c || c->enforcement_active)
+		return 0;
+	return c->fail_closed != 0;
 }
 
 static __always_inline int is_tagged_pid(__u32 pid)
@@ -256,12 +271,23 @@ static __always_inline int is_tagged_pid(__u32 pid)
 
 static __always_inline int enforce_gate(void)
 {
-	if (!is_enforcement_active())
+	struct policy_ctrl *c = policy_ctrl_get();
+
+	if (!c)
+		return 0;
+	if (!c->enforcement_active && !c->fail_closed)
 		return 0;
 	__u32 pid = bpf_get_current_pid_tgid() >> 32;
 	if (!is_tagged_pid(pid))
 		return 0;
 	return 1;
+}
+
+static __always_inline int cgroup_should_enforce(void)
+{
+	if (enforcement_live())
+		return 1;
+	return fail_closed_regime();
 }
 
 static __always_inline struct lpm_key *scratch_lpm_key(void)
@@ -583,8 +609,12 @@ int enforce_cgroup_connect4(struct bpf_sock_addr *ctx)
 
 	ip4 = ctx->user_ip4;
 	user_port = ctx->user_port;
-	if (!is_enforcement_active())
+	if (!cgroup_should_enforce())
 		return 1;
+	if (!enforcement_live()) {
+		stat_inc(STAT_CONNECT_DENY);
+		return 0;
+	}
 	// Hook can run before user_ip4 is populated; do not deny on empty target.
 	if (!ip4)
 		return 1;
@@ -606,8 +636,12 @@ int enforce_cgroup_connect6(struct bpf_sock_addr *ctx)
 	w2 = ctx->user_ip6[2];
 	w3 = ctx->user_ip6[3];
 	user_port = ctx->user_port;
-	if (!is_enforcement_active())
+	if (!cgroup_should_enforce())
 		return 1;
+	if (!enforcement_live()) {
+		stat_inc(STAT_CONNECT_DENY);
+		return 0;
+	}
 	if (!w0 && !w1 && !w2 && !w3)
 		return 1;
 
@@ -631,6 +665,10 @@ int BPF_PROG(enforce_file_open, struct file *file)
 	stat_inc(STAT_FILE_OPEN);
 	if (!enforce_gate())
 		return 0;
+	if (!enforcement_live()) {
+		stat_inc(STAT_OPENAT_DENY);
+		return -EPERM;
+	}
 	stat_inc(STAT_GATE_PASS);
 
 	f_flags = BPF_CORE_READ(file, f_flags);
@@ -673,6 +711,10 @@ int BPF_PROG(enforce_socket_connect, struct socket *sock, struct sockaddr *addre
 
 	if (!enforce_gate())
 		return 0;
+	if (!enforcement_live()) {
+		stat_inc(STAT_CONNECT_DENY);
+		return -EPERM;
+	}
 	rc = enforce_connect(address, addrlen);
 	if (rc)
 		stat_inc(STAT_CONNECT_DENY);
@@ -738,6 +780,10 @@ int BPF_PROG(enforce_openat_entry)
 	stat_inc(STAT_OPENAT_FMOD);
 	if (!enforce_gate())
 		return 0;
+	if (!enforcement_live()) {
+		stat_inc(STAT_OPENAT_DENY);
+		return -EPERM;
+	}
 	return enforce_openat_from_pending(pid);
 }
 
@@ -749,6 +795,10 @@ int BPF_PROG(enforce_connect_entry)
 	stat_inc(STAT_CONNECT_FMOD);
 	if (!enforce_gate())
 		return 0;
+	if (!enforcement_live()) {
+		stat_inc(STAT_CONNECT_DENY);
+		return -EPERM;
+	}
 	return enforce_connect_from_pending(pid);
 }
 #endif
