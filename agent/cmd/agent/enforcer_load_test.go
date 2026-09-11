@@ -32,7 +32,7 @@ func TestEnforcerBPFSkeleton(t *testing.T) {
 		t.Fatalf("expected fmod_ret openat+connect on amd64, got %d: %v", len(syscallAttached), syscallAttached)
 	}
 
-	attached, err := loader.AttachLSM()
+	attached, err := loader.AttachLSM(true)
 	if err != nil {
 		t.Fatalf("attach LSM: %v", err)
 	}

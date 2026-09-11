@@ -365,7 +365,8 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx)
 		__builtin_memcpy(d->addr, &sin.sin_addr, 4);
 		pc.port = d->dport;
 		pc.ip_len = 4;
-		if (bpf_probe_read_kernel(pc.ip, 4, &sin.sin_addr) == 0) {
+		__builtin_memcpy(pc.ip, &sin.sin_addr, 4);
+		{
 			__u32 zero = 0;
 
 			bpf_map_update_elem(&pending_connects, &pid, &pc, BPF_ANY);
@@ -381,7 +382,8 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx)
 		__builtin_memcpy(d->addr, sin6.sin6_addr, 16);
 		pc.port = d->dport;
 		pc.ip_len = 16;
-		if (bpf_probe_read_kernel(pc.ip, 16, sin6.sin6_addr) == 0) {
+		__builtin_memcpy(pc.ip, sin6.sin6_addr, 16);
+		{
 			__u32 zero = 0;
 
 			bpf_map_update_elem(&pending_connects, &pid, &pc, BPF_ANY);

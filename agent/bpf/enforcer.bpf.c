@@ -469,7 +469,8 @@ static __always_inline int enforce_connect_parsed(__u8 *ip, int ip_len, __u16 po
 
 	if (dip && !dip->requires_port) {
 		if (aip && aip->decision == MAP_DECISION_ALLOW &&
-		    aip->action == VERDICT_CONNECT && !aip->requires_port)
+		    aip->action == VERDICT_CONNECT &&
+		    connect_rule_matches(aip, apt))
 			return 0;
 		if (ip_not_in_rule_matches(dip, aip, dip->rule_id_hash)) {
 			emit_deny(VERDICT_CONNECT, dip->rule_id_hash, NULL, 0);
@@ -483,7 +484,8 @@ static __always_inline int enforce_connect_parsed(__u8 *ip, int ip_len, __u16 po
 		return -EPERM;
 	}
 
-	if (dip && connect_rule_matches(dip, dpt)) {
+	// IP+port paired dest_ip_in deny rules only; dest_ip_not_in catch-alls are handled above.
+	if (dip && dip->requires_port && connect_rule_matches(dip, dpt)) {
 		if (aip && aip->specificity > dip->specificity)
 			return 0;
 		emit_deny(VERDICT_CONNECT, dip->rule_id_hash, NULL, 0);
@@ -665,9 +667,14 @@ int BPF_PROG(enforce_path_rename, const struct path *old_dir, struct dentry *old
 SEC("lsm/socket_connect")
 int BPF_PROG(enforce_socket_connect, struct socket *sock, struct sockaddr *address, int addrlen)
 {
+	int rc;
+
 	if (!enforce_gate())
 		return 0;
-	return enforce_connect(address, addrlen);
+	rc = enforce_connect(address, addrlen);
+	if (rc)
+		stat_inc(STAT_CONNECT_DENY);
+	return rc;
 }
 
 // Syscall fmod_ret hooks block at entry and do not depend on bpf being in the

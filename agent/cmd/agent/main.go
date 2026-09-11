@@ -163,12 +163,16 @@ func main() {
 			log.Error("no enforcement hooks active: fmod_ret programs missing from BPF object and bpf is not in the kernel LSM stack")
 			os.Exit(1)
 		}
-		lsmAttached, err := enforcer.AttachLSM()
+		lsmAttached, err := enforcer.AttachLSM(bpfInLSM)
 		if err != nil {
 			log.Error("attaching LSM enforcer (requires root and CONFIG_BPF_LSM)", "err", err)
 			os.Exit(1)
 		}
-		log.Info("attached LSM enforcer", "programs", lsmAttached)
+		if !bpfInLSM {
+			log.Info("attached LSM enforcer (socket_connect skipped; bpf not in active LSM stack)", "programs", lsmAttached)
+		} else {
+			log.Info("attached LSM enforcer", "programs", lsmAttached)
+		}
 
 		if cfg.ModeA.Enabled {
 			cgPath, err := cgroup.ResolveV2Dir(cfg.ModeA.CgroupContains)

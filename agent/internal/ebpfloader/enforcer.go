@@ -145,10 +145,14 @@ func (l *EnforcerLoader) AttachCgroupEgress(cgroupPath string) ([]string, error)
 	return attached, nil
 }
 
-// AttachLSM links every LSM program. Requires CONFIG_BPF_LSM and lsm=...,bpf.
-func (l *EnforcerLoader) AttachLSM() ([]string, error) {
+// AttachLSM links LSM programs. When attachSocketConnect is false, skips
+// enforce_socket_connect (fmod_ret/cgroup are primary when bpf is not active).
+func (l *EnforcerLoader) AttachLSM(attachSocketConnect bool) ([]string, error) {
 	var attached []string
 	for _, lp := range lsmPrograms {
+		if !attachSocketConnect && lp.name == "enforce_socket_connect" {
+			continue
+		}
 		prog, ok := l.coll.Programs[lp.name]
 		if !ok {
 			return attached, fmt.Errorf("program %q not found in enforcer object", lp.name)
