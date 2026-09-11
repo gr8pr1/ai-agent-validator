@@ -70,6 +70,10 @@ struct deny_verdict {
 	char path[MAX_PATH];
 };
 
+struct path_buf {
+	char data[MAX_PATH];
+};
+
 struct sockaddr_in_simple {
 	__u16 sin_family;
 	__be16 sin_port;
@@ -149,6 +153,20 @@ struct {
 	__uint(max_entries, 256 * 1024);
 } deny_verdicts SEC(".maps");
 
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct path_buf);
+} path_scratch SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct lpm_key);
+} lpm_scratch SEC(".maps");
+
 static __always_inline int is_enforcement_active(void)
 {
 	__u32 k = 0;
@@ -173,6 +191,22 @@ static __always_inline int enforce_gate(void)
 	return 1;
 }
 
+static __always_inline char *scratch_path(void)
+{
+	__u32 k = 0;
+	struct path_buf *b = bpf_map_lookup_elem(&path_scratch, &k);
+
+	if (!b)
+		return NULL;
+	return b->data;
+}
+
+static __always_inline struct lpm_key *scratch_lpm_key(void)
+{
+	__u32 k = 0;
+	return bpf_map_lookup_elem(&lpm_scratch, &k);
+}
+
 static __always_inline __u16 port_host(__be16 p)
 {
 	return __builtin_bswap16(p);
@@ -189,14 +223,15 @@ static __always_inline int path_len_from_d_path(long ret)
 
 static __always_inline struct path_rule *path_lpm_lookup(void *map, const char *path, int len)
 {
-	struct lpm_key key = {};
+	struct lpm_key *key = scratch_lpm_key();
 
-	if (!path || len <= 0 || len >= MAX_PATH)
+	if (!key || !path || len <= 0 || len >= MAX_PATH)
 		return NULL;
-	key.prefixlen = (__u32)len * 8;
-	if (bpf_probe_read_kernel(key.data, len, path) != 0)
+	__builtin_memset(key, 0, sizeof(*key));
+	key->prefixlen = (__u32)len * 8;
+	if (bpf_probe_read_kernel(key->data, len, path) != 0)
 		return NULL;
-	return bpf_map_lookup_elem(map, &key);
+	return bpf_map_lookup_elem(map, key);
 }
 
 static __always_inline int action_matches(__u8 rule_action, __u8 verdict, int write_intent)
@@ -256,14 +291,19 @@ static __always_inline int enforce_path(char *path, int len, __u8 verdict, int w
 
 static __always_inline struct path_rule *ip_lpm_lookup(void *map, __u8 *ip, int ip_len)
 {
-	struct lpm_key key = {};
+	struct lpm_key *key = scratch_lpm_key();
+	int i;
 
-	if (!ip || ip_len <= 0 || ip_len > 16)
+	if (!key || !ip || ip_len <= 0 || ip_len > 16)
 		return NULL;
-	key.prefixlen = (__u32)ip_len * 8;
-	if (bpf_probe_read_kernel(key.data, ip_len, ip) != 0)
-		return NULL;
-	return bpf_map_lookup_elem(map, &key);
+	__builtin_memset(key, 0, sizeof(*key));
+	key->prefixlen = (__u32)ip_len * 8;
+	for (i = 0; i < 16; i++) {
+		if (i >= ip_len)
+			break;
+		key->data[i] = ip[i];
+	}
+	return bpf_map_lookup_elem(map, key);
 }
 
 static __always_inline int connect_rule_matches(struct path_rule *ip_rule, struct port_rule *port_rule)
@@ -385,13 +425,17 @@ static __always_inline int enforce_connect(struct sockaddr *address, int addrlen
 SEC("lsm/file_open")
 int BPF_PROG(enforce_file_open, struct file *file)
 {
-	char path_buf[MAX_PATH];
+	char *path_buf;
 	int len, write_intent;
 	__u32 f_flags;
 	long dpath_ret;
 	int rc;
 
 	if (!enforce_gate())
+		return 0;
+
+	path_buf = scratch_path();
+	if (!path_buf)
 		return 0;
 
 	dpath_ret = bpf_d_path(&file->f_path, path_buf, MAX_PATH);
