@@ -152,6 +152,7 @@ func main() {
 		}
 		defer enforcer.Close()
 		bpfInLSM := logKernelLSMStack(log)
+		ebpfloader.WarnExtraEnforcerProgs(log, "before_attach")
 		syscallAttached, err := enforcer.AttachSyscallEnforcement()
 		if err != nil {
 			log.Error("attaching syscall fmod_ret enforcer", "err", err)
@@ -190,7 +191,9 @@ func main() {
 				os.Exit(1)
 			}
 			log.Info("attached cgroup egress enforcer", "cgroup", cgPath, "programs", cgroupAttached)
+			ebpfloader.LogCgroupConnectPrograms(cgPath, log)
 			ebpfloader.WarnExtraCgroupPrograms(cgPath, log)
+			ebpfloader.WarnExtraEnforcerProgs(log, "after_attach")
 		}
 	}
 
