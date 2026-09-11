@@ -19,8 +19,8 @@ type lsmProgram struct {
 
 var lsmPrograms = []lsmProgram{
 	{name: "enforce_file_open"},
-	{name: "enforce_inode_unlink"},
-	{name: "enforce_inode_rename"},
+	{name: "enforce_path_unlink"},
+	{name: "enforce_path_rename"},
 	{name: "enforce_socket_connect"},
 }
 

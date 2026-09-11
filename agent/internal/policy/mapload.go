@@ -60,18 +60,20 @@ type lpmKey struct {
 
 // pathRule mirrors struct path_rule in enforcer.bpf.c.
 type pathRule struct {
-	Decision    uint8
-	Action      uint8
-	_           [2]uint8
-	RuleIDHash  uint32
-	Specificity uint32
+	Decision     uint8
+	Action       uint8
+	RequiresPort uint8
+	_            uint8
+	RuleIDHash   uint32
+	Specificity  uint32
 }
 
 // portRule mirrors struct port_rule in enforcer.bpf.c.
 type portRule struct {
 	Decision   uint8
 	Action     uint8
-	_          [2]uint8
+	RequiresIP uint8
+	_          uint8
 	RuleIDHash uint32
 }
 
@@ -170,12 +172,23 @@ func loadPathRule(r CompiledRule, maps EnforcerMapSet, verdict, dec uint8, hash 
 func loadConnectRule(r CompiledRule, maps EnforcerMapSet, verdict, dec uint8, hash uint32) (loadCounts, error) {
 	var out loadCounts
 	specificity := uint32(r.Specificity)
-	ipVal := pathRule{Decision: dec, Action: verdict, RuleIDHash: hash, Specificity: specificity}
+	requiresPort := uint8(0)
+	if len(r.DestPortIn) > 0 || len(r.DestPortNotIn) > 0 {
+		requiresPort = 1
+	}
+	requiresIP := uint8(0)
+	if len(r.DestIPIn) > 0 || len(r.DestIPNotIn) > 0 {
+		requiresIP = 1
+	}
+	ipVal := pathRule{
+		Decision: dec, Action: verdict, RequiresPort: requiresPort,
+		RuleIDHash: hash, Specificity: specificity,
+	}
 	ipMap := maps.IPDeny
 	if dec == MapDecisionAllow {
 		ipMap = maps.IPAllow
 	}
-	portVal := portRule{Decision: dec, Action: verdict, RuleIDHash: hash}
+	portVal := portRule{Decision: dec, Action: verdict, RequiresIP: requiresIP, RuleIDHash: hash}
 	portMap := maps.PortDeny
 	if dec == MapDecisionAllow {
 		portMap = maps.PortAllow
@@ -203,7 +216,7 @@ func loadConnectRule(r CompiledRule, maps EnforcerMapSet, verdict, dec uint8, ha
 			return out, fmt.Errorf("dest_ip_not_in requires deny decision")
 		}
 		allowIPVal := pathRule{
-			Decision: MapDecisionAllow, Action: verdict,
+			Decision: MapDecisionAllow, Action: verdict, RequiresPort: requiresPort,
 			RuleIDHash: hash, Specificity: specificity,
 		}
 		for _, cidr := range r.DestIPNotIn {
@@ -215,6 +228,20 @@ func loadConnectRule(r CompiledRule, maps EnforcerMapSet, verdict, dec uint8, ha
 				return out, fmt.Errorf("put ip_not_in allow %q: %w", cidr, err)
 			}
 			out.ipAllow++
+		}
+		denyCatch := pathRule{
+			Decision: MapDecisionDeny, Action: verdict, RequiresPort: requiresPort,
+			RuleIDHash: hash, Specificity: specificity,
+		}
+		for _, cidr := range []string{"0.0.0.0/0", "::/0"} {
+			key, err := cidrToLPM(cidr)
+			if err != nil {
+				return out, err
+			}
+			if err := maps.IPDeny.Put(key, denyCatch); err != nil {
+				return out, fmt.Errorf("put ip_not_in catch-all %q: %w", cidr, err)
+			}
+			out.ipDeny++
 		}
 	}
 
@@ -229,18 +256,29 @@ func loadConnectRule(r CompiledRule, maps EnforcerMapSet, verdict, dec uint8, ha
 		}
 	}
 
-	// dest_port_not_in + deny → allowed ports in port_allow
+	// dest_port_not_in + deny → allowed ports in port_allow + catch-all deny at port 0
 	if len(r.DestPortNotIn) > 0 {
 		if dec != MapDecisionDeny {
 			return out, fmt.Errorf("dest_port_not_in requires deny decision")
 		}
-		allowVal := portRule{Decision: MapDecisionAllow, Action: verdict, RuleIDHash: hash}
+		allowVal := portRule{
+			Decision: MapDecisionAllow, Action: verdict,
+			RequiresIP: requiresIP, RuleIDHash: hash,
+		}
 		for _, port := range r.DestPortNotIn {
 			if err := maps.PortAllow.Put(port, allowVal); err != nil {
 				return out, fmt.Errorf("put port_not_in allow %d: %w", port, err)
 			}
 			out.portAllow++
 		}
+		denyCatch := portRule{
+			Decision: MapDecisionDeny, Action: verdict,
+			RequiresIP: requiresIP, RuleIDHash: hash,
+		}
+		if err := maps.PortDeny.Put(uint16(0), denyCatch); err != nil {
+			return out, fmt.Errorf("put port_not_in catch-all deny: %w", err)
+		}
+		out.portDeny++
 	}
 
 	loaded := out.ipDeny + out.ipAllow + out.portDeny + out.portAllow

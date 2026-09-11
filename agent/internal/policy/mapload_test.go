@@ -99,6 +99,46 @@ func TestLoadLivePathDeny(t *testing.T) {
 	}
 }
 
+func TestLoadLiveConnectNotInCatchAll(t *testing.T) {
+	maps := testEnforcerMaps(t)
+	cp := &CompiledPolicy{
+		Version:       1,
+		DefaultAction: DefaultActionAllow,
+		FailDirection: FailDirectionOpen,
+		Live: []CompiledRule{{
+			ID: "deny-public-egress", Rationale: "no public", Decision: DecisionDeny,
+			Action: "connect", DestIPNotIn: []string{"10.0.0.0/8"}, Specificity: 8,
+		}},
+	}
+	stats, err := LoadLive(cp, maps, PolicyCtrlValues{EnforcementActive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.IPAllow != 1 || stats.IPDeny < 2 {
+		t.Fatalf("stats=%+v", stats)
+	}
+}
+
+func TestLoadLiveConnectPortNotInCatchAll(t *testing.T) {
+	maps := testEnforcerMaps(t)
+	cp := &CompiledPolicy{
+		Version:       1,
+		DefaultAction: DefaultActionAllow,
+		FailDirection: FailDirectionOpen,
+		Live: []CompiledRule{{
+			ID: "deny-weird-ports", Rationale: "ports", Decision: DecisionDeny,
+			Action: "connect", DestPortNotIn: []uint16{443, 80}, Specificity: 16,
+		}},
+	}
+	stats, err := LoadLive(cp, maps, PolicyCtrlValues{EnforcementActive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.PortAllow != 2 || stats.PortDeny != 1 {
+		t.Fatalf("stats=%+v", stats)
+	}
+}
+
 func TestLoadLiveConnectAllowLists(t *testing.T) {
 	maps := testEnforcerMaps(t)
 	cp := &CompiledPolicy{
