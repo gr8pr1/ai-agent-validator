@@ -155,6 +155,47 @@ func TestLoadLiveConnectPortNotInCatchAll(t *testing.T) {
 	}
 }
 
+func TestLoadLiveLocalhostCarveOut(t *testing.T) {
+	maps := testEnforcerMaps(t)
+	cp := &CompiledPolicy{
+		Version:       1,
+		DefaultAction: DefaultActionAllow,
+		FailDirection: FailDirectionOpen,
+		Live: []CompiledRule{{
+			ID: "deny-public-egress", Rationale: "no public", Decision: DecisionDeny,
+			Action: "connect",
+			DestIPNotIn: []string{
+				"10.0.0.0/8", "127.0.0.0/8", "192.168.0.0/16", "172.16.0.0/12",
+			},
+			Specificity: 16,
+		}, {
+			ID: "allow-localhost", Rationale: "loopback ok", Decision: DecisionAllow,
+			Action: "connect", DestIPIn: []string{"127.0.0.0/8"}, Specificity: 8,
+		}},
+	}
+	stats, err := LoadLive(cp, maps, PolicyCtrlValues{EnforcementActive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.IPAllow < 5 {
+		t.Fatalf("expected private-range allow entries, stats=%+v", stats)
+	}
+	allow, err := lookupIPRule(maps.IPAllow, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allow.Decision != MapDecisionAllow {
+		t.Fatalf("127.0.0.1 allow decision=%d", allow.Decision)
+	}
+	deny, err := lookupIPRule(maps.IPDeny, "8.8.8.8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deny.Decision != MapDecisionDeny {
+		t.Fatalf("8.8.8.8 deny decision=%d", deny.Decision)
+	}
+}
+
 func TestLoadLiveConnectAllowLists(t *testing.T) {
 	maps := testEnforcerMaps(t)
 	cp := &CompiledPolicy{
@@ -224,4 +265,16 @@ func mustLPM(prefix string) lpmKey {
 		panic(err)
 	}
 	return k
+}
+
+func lookupIPRule(m *ebpf.Map, ip string) (pathRule, error) {
+	k, err := cidrToLPM(ip + "/32")
+	if err != nil {
+		return pathRule{}, err
+	}
+	var v pathRule
+	if err := m.Lookup(k, &v); err != nil {
+		return pathRule{}, err
+	}
+	return v, nil
 }

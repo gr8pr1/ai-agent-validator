@@ -468,7 +468,7 @@ static __always_inline int enforce_connect_parsed(__u8 *ip, int ip_len, __u16 po
 
 	if (dip && !dip->requires_port) {
 		if (aip && aip->decision == MAP_DECISION_ALLOW &&
-		    aip->specificity >= dip->specificity)
+		    aip->action == VERDICT_CONNECT && !aip->requires_port)
 			return 0;
 		if (ip_not_in_rule_matches(dip, aip, dip->rule_id_hash)) {
 			emit_deny(VERDICT_CONNECT, dip->rule_id_hash, NULL, 0);
@@ -552,12 +552,19 @@ static __always_inline int cgroup_connect_action(__u8 *ip, int ip_len, __u16 por
 	return 0;
 }
 
-static __always_inline void ipv6_word_to_bytes(__u8 *ip, int off, __u32 w)
+static __always_inline __u32 u32_ntoh(__u32 be)
 {
-	ip[off] = w & 0xff;
-	ip[off + 1] = (w >> 8) & 0xff;
-	ip[off + 2] = (w >> 16) & 0xff;
-	ip[off + 3] = (w >> 24) & 0xff;
+	return __builtin_bswap32(be);
+}
+
+static __always_inline void be32_to_ip_bytes(__u8 *ip, int off, __u32 be)
+{
+	__u32 a = u32_ntoh(be);
+
+	ip[off] = (a >> 24) & 0xff;
+	ip[off + 1] = (a >> 16) & 0xff;
+	ip[off + 2] = (a >> 8) & 0xff;
+	ip[off + 3] = a & 0xff;
 }
 
 // Cgroup connect hooks must read bpf_sock_addr fields in the SEC function itself,
@@ -571,13 +578,13 @@ int enforce_cgroup_connect4(struct bpf_sock_addr *ctx)
 
 	ip4 = ctx->user_ip4;
 	user_port = ctx->user_port;
-	if (!is_enforcement_active())
+	if (!enforce_gate())
+		return 0;
+	// Hook can run before user_ip4 is populated; do not deny on empty target.
+	if (!ip4)
 		return 0;
 
-	ip[0] = ip4 & 0xff;
-	ip[1] = (ip4 >> 8) & 0xff;
-	ip[2] = (ip4 >> 16) & 0xff;
-	ip[3] = (ip4 >> 24) & 0xff;
+	be32_to_ip_bytes(ip, 0, ip4);
 	return cgroup_connect_action(ip, 4, cgroup_user_port(user_port));
 }
 
@@ -593,13 +600,15 @@ int enforce_cgroup_connect6(struct bpf_sock_addr *ctx)
 	w2 = ctx->user_ip6[2];
 	w3 = ctx->user_ip6[3];
 	user_port = ctx->user_port;
-	if (!is_enforcement_active())
+	if (!enforce_gate())
+		return 0;
+	if (!w0 && !w1 && !w2 && !w3)
 		return 0;
 
-	ipv6_word_to_bytes(ip, 0, w0);
-	ipv6_word_to_bytes(ip, 4, w1);
-	ipv6_word_to_bytes(ip, 8, w2);
-	ipv6_word_to_bytes(ip, 12, w3);
+	be32_to_ip_bytes(ip, 0, w0);
+	be32_to_ip_bytes(ip, 4, w1);
+	be32_to_ip_bytes(ip, 8, w2);
+	be32_to_ip_bytes(ip, 12, w3);
 	return cgroup_connect_action(ip, 16, cgroup_user_port(user_port));
 }
 
