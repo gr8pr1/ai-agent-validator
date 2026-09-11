@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"net"
 	"strings"
+	"syscall"
 
 	"github.com/cilium/ebpf"
 )
@@ -29,6 +30,8 @@ type EnforcerMapSet struct {
 	PolicyCtrl *ebpf.Map
 	PathDeny   *ebpf.Map
 	PathAllow  *ebpf.Map
+	InodeDeny  *ebpf.Map
+	InodeAllow *ebpf.Map
 	IPDeny     *ebpf.Map
 	IPAllow    *ebpf.Map
 	PortDeny   *ebpf.Map
@@ -43,13 +46,15 @@ type PolicyCtrlValues struct {
 
 // LoadStats counts map entries written by LoadLive.
 type LoadStats struct {
-	PathDeny  int
-	PathAllow int
-	IPDeny    int
-	IPAllow   int
-	PortDeny  int
-	PortAllow int
-	Skipped   int
+	PathDeny   int
+	PathAllow  int
+	InodeDeny  int
+	InodeAllow int
+	IPDeny     int
+	IPAllow    int
+	PortDeny   int
+	PortAllow  int
+	Skipped    int
 }
 
 // lpmKey mirrors struct lpm_key in enforcer.bpf.c.
@@ -123,6 +128,8 @@ func LoadLive(cp *CompiledPolicy, maps EnforcerMapSet, ctrl PolicyCtrlValues) (L
 			}
 			stats.PathDeny += n.pathDeny
 			stats.PathAllow += n.pathAllow
+			stats.InodeDeny += n.inodeDeny
+			stats.InodeAllow += n.inodeAllow
 		}
 	}
 	if err := writePolicyCtrl(cp, maps.PolicyCtrl, ctrl); err != nil {
@@ -132,9 +139,17 @@ func LoadLive(cp *CompiledPolicy, maps EnforcerMapSet, ctrl PolicyCtrlValues) (L
 }
 
 type loadCounts struct {
-	pathDeny, pathAllow int
-	ipDeny, ipAllow     int
-	portDeny, portAllow int
+	pathDeny, pathAllow       int
+	inodeDeny, inodeAllow     int
+	ipDeny, ipAllow           int
+	portDeny, portAllow       int
+}
+
+// inodeKey mirrors struct inode_key in enforcer.bpf.c.
+type inodeKey struct {
+	Ino uint64
+	Dev uint32
+	_   uint32
 }
 
 func loadPathRule(r CompiledRule, maps EnforcerMapSet, verdict, dec uint8, hash uint32) (loadCounts, error) {
@@ -143,8 +158,10 @@ func loadPathRule(r CompiledRule, maps EnforcerMapSet, verdict, dec uint8, hash 
 		return out, fmt.Errorf("path rule has no path_in")
 	}
 	target := maps.PathDeny
+	inodeTarget := maps.InodeDeny
 	if dec == MapDecisionAllow {
 		target = maps.PathAllow
+		inodeTarget = maps.InodeAllow
 	}
 	val := pathRule{
 		Decision:    dec,
@@ -164,6 +181,20 @@ func loadPathRule(r CompiledRule, maps EnforcerMapSet, verdict, dec uint8, hash 
 			out.pathAllow++
 		} else {
 			out.pathDeny++
+		}
+		if isExactPathPattern(pattern) {
+			ikey, err := pathToInodeKey(pattern)
+			if err != nil {
+				return out, fmt.Errorf("resolve inode for %q: %w", pattern, err)
+			}
+			if err := inodeTarget.Put(ikey, val); err != nil {
+				return out, fmt.Errorf("put inode %q: %w", pattern, err)
+			}
+			if dec == MapDecisionAllow {
+				out.inodeAllow++
+			} else {
+				out.inodeDeny++
+			}
 		}
 	}
 	return out, nil
@@ -291,6 +322,7 @@ func loadConnectRule(r CompiledRule, maps EnforcerMapSet, verdict, dec uint8, ha
 
 func validateEnforcerMaps(m EnforcerMapSet) error {
 	if m.PolicyCtrl == nil || m.PathDeny == nil || m.PathAllow == nil ||
+		m.InodeDeny == nil || m.InodeAllow == nil ||
 		m.IPDeny == nil || m.IPAllow == nil || m.PortDeny == nil || m.PortAllow == nil {
 		return fmt.Errorf("incomplete enforcer map set")
 	}
@@ -330,7 +362,7 @@ func writePolicyCtrl(cp *CompiledPolicy, m *ebpf.Map, ctrl PolicyCtrlValues) err
 }
 
 func clearPolicyMaps(m EnforcerMapSet) error {
-	for _, mp := range []*ebpf.Map{m.PathDeny, m.PathAllow, m.IPDeny, m.IPAllow, m.PortDeny, m.PortAllow} {
+	for _, mp := range []*ebpf.Map{m.PathDeny, m.PathAllow, m.InodeDeny, m.InodeAllow, m.IPDeny, m.IPAllow, m.PortDeny, m.PortAllow} {
 		if err := clearMap(mp); err != nil {
 			return err
 		}
@@ -356,6 +388,21 @@ func clearMap(m *ebpf.Map) error {
 		}
 	}
 	return nil
+}
+
+func isExactPathPattern(pattern string) bool {
+	if strings.Contains(strings.TrimSuffix(pattern, "/*"), "*") {
+		return false
+	}
+	return !strings.HasSuffix(pattern, "/*")
+}
+
+func pathToInodeKey(path string) (inodeKey, error) {
+	var st syscall.Stat_t
+	if err := syscall.Stat(path, &st); err != nil {
+		return inodeKey{}, err
+	}
+	return inodeKey{Ino: st.Ino, Dev: uint32(st.Dev)}, nil
 }
 
 func pathPatternToLPM(pattern string) (lpmKey, error) {

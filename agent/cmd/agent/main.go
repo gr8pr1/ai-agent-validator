@@ -359,7 +359,7 @@ func applyLivePolicy(enforcer *ebpfloader.EnforcerLoader, cp *policy.CompiledPol
 	if stats.Skipped > 0 {
 		log.Warn("kernel map load skipped rules with uid/binary/cgroup predicates", "skipped", stats.Skipped)
 	}
-	if len(cp.Live) > 0 && stats.PathDeny+stats.PathAllow+stats.IPDeny+stats.IPAllow+stats.PortDeny+stats.PortAllow == 0 {
+	if len(cp.Live) > 0 && stats.PathDeny+stats.PathAllow+stats.InodeDeny+stats.InodeAllow+stats.IPDeny+stats.IPAllow+stats.PortDeny+stats.PortAllow == 0 {
 		log.Warn("kernel enforcement maps are empty despite live rules; ensure rules use state: enforced and kernel-loadable predicates")
 	}
 	return stats, nil

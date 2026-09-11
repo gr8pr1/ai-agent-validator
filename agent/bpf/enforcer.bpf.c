@@ -76,6 +76,12 @@ struct pending_open {
 	char path[MAX_PATH];
 };
 
+struct inode_key {
+	__u64 ino;
+	__u32 dev;
+	__u32 _pad;
+};
+
 struct sockaddr_in_simple {
 	__u16 sin_family;
 	__be16 sin_port;
@@ -110,6 +116,20 @@ struct {
 	__type(key, __u32);
 	__type(value, struct pending_open);
 } pending_open_paths SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 256);
+	__type(key, struct inode_key);
+	__type(value, struct path_rule);
+} inode_deny SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 128);
+	__type(key, struct inode_key);
+	__type(value, struct path_rule);
+} inode_allow SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
@@ -239,17 +259,14 @@ static __always_inline void emit_deny(__u8 action, __u32 rule_hash)
 	bpf_ringbuf_submit(v, 0);
 }
 
-static __always_inline int enforce_path(char *path, int len, __u8 verdict, int write_intent)
+static __always_inline int enforce_open_verdict(struct path_rule *deny_rule,
+						struct path_rule *allow_rule,
+						__u8 verdict, int write_intent)
 {
-	struct path_rule *deny_rule, *allow_rule;
-	int deny_match = 0, allow_match = 0;
+	int deny_match = 0;
 	__u32 deny_spec = 0;
 	__u32 deny_hash = 0;
 
-	if (!path || len <= 0)
-		return 0;
-
-	deny_rule = path_lpm_lookup(&path_deny, path, len);
 	if (deny_rule && deny_rule->decision == MAP_DECISION_DENY &&
 	    action_matches(deny_rule->action, verdict, write_intent)) {
 		deny_match = 1;
@@ -257,19 +274,41 @@ static __always_inline int enforce_path(char *path, int len, __u8 verdict, int w
 		deny_hash = deny_rule->rule_id_hash;
 	}
 
-	allow_rule = path_lpm_lookup(&path_allow, path, len);
 	if (allow_rule && allow_rule->decision == MAP_DECISION_ALLOW &&
-	    action_matches(allow_rule->action, verdict, write_intent)) {
-		allow_match = 1;
-		if (allow_match && allow_rule->specificity > deny_spec)
-			return 0;
-	}
+	    action_matches(allow_rule->action, verdict, write_intent) &&
+	    allow_rule->specificity > deny_spec)
+		return 0;
 
 	if (deny_match) {
 		emit_deny(verdict, deny_hash);
 		return -EPERM;
 	}
 	return 0;
+}
+
+static __always_inline struct path_rule *inode_rule_lookup(void *map, struct file *file)
+{
+	struct inode *inode;
+	struct inode_key ikey = {};
+
+	inode = BPF_CORE_READ(file, f_inode);
+	if (!inode)
+		return NULL;
+	ikey.ino = BPF_CORE_READ(inode, i_ino);
+	ikey.dev = (__u32)BPF_CORE_READ(inode, i_sb, s_dev);
+	return bpf_map_lookup_elem(map, &ikey);
+}
+
+static __always_inline int enforce_path(char *path, int len, __u8 verdict, int write_intent)
+{
+	struct path_rule *deny_rule, *allow_rule;
+
+	if (!path || len <= 0)
+		return 0;
+
+	deny_rule = path_lpm_lookup(&path_deny, path, len);
+	allow_rule = path_lpm_lookup(&path_allow, path, len);
+	return enforce_open_verdict(deny_rule, allow_rule, verdict, write_intent);
 }
 
 static __always_inline struct path_rule *ip_lpm_lookup(void *map, __u8 *ip, int ip_len)
@@ -413,20 +452,33 @@ int BPF_PROG(enforce_file_open, struct file *file)
 {
 	__u32 pid = bpf_get_current_pid_tgid() >> 32;
 	struct pending_open *po;
-	int rc;
-
-	(void)file;
+	struct path_rule *deny_rule, *allow_rule;
+	__u32 f_flags;
+	int write_intent, rc;
 
 	if (!enforce_gate())
 		return 0;
 
 	po = bpf_map_lookup_elem(&pending_open_paths, &pid);
-	if (!po || po->len <= 0)
-		return 0;
+	if (po && po->len > 0)
+		write_intent = (po->open_flags & O_ACCMODE) != 0;
+	else {
+		f_flags = BPF_CORE_READ(file, f_flags);
+		write_intent = (f_flags & O_ACCMODE) != 0;
+	}
 
-	rc = enforce_path(po->path, po->len, VERDICT_OPEN,
-			   (po->open_flags & O_ACCMODE) != 0);
-	bpf_map_delete_elem(&pending_open_paths, &pid);
+	deny_rule = inode_rule_lookup(&inode_deny, file);
+	allow_rule = inode_rule_lookup(&inode_allow, file);
+	rc = enforce_open_verdict(deny_rule, allow_rule, VERDICT_OPEN, write_intent);
+	if (rc)
+		goto out;
+
+	if (po && po->len > 0)
+		rc = enforce_path(po->path, po->len, VERDICT_OPEN, write_intent);
+
+out:
+	if (po && po->len > 0)
+		bpf_map_delete_elem(&pending_open_paths, &pid);
 	return rc;
 }
 

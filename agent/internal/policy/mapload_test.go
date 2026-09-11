@@ -33,6 +33,8 @@ func testEnforcerMaps(t *testing.T) EnforcerMapSet {
 		PolicyCtrl: coll.Maps["policy_ctrl"],
 		PathDeny:   coll.Maps["path_deny"],
 		PathAllow:  coll.Maps["path_allow"],
+		InodeDeny:  coll.Maps["inode_deny"],
+		InodeAllow: coll.Maps["inode_allow"],
 		IPDeny:     coll.Maps["ip_deny"],
 		IPAllow:    coll.Maps["ip_allow"],
 		PortDeny:   coll.Maps["port_deny"],
@@ -74,28 +76,42 @@ func TestCIDRToLPM(t *testing.T) {
 
 func TestLoadLivePathDeny(t *testing.T) {
 	maps := testEnforcerMaps(t)
+	path := t.TempDir() + "/secret"
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cp := &CompiledPolicy{
 		Version:       1,
 		DefaultAction: DefaultActionAllow,
 		FailDirection: FailDirectionOpen,
 		Live: []CompiledRule{{
-			ID: "deny-etc-shadow", Rationale: "no shadow file", Decision: DecisionDeny,
-			Action: "open", PathIn: []string{"/etc/shadow"}, Specificity: 12,
+			ID: "deny-secret", Rationale: "no secret file", Decision: DecisionDeny,
+			Action: "open", PathIn: []string{path}, Specificity: 12,
 		}},
 	}
 	stats, err := LoadLive(cp, maps, PolicyCtrlValues{EnforcementActive: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.PathDeny != 1 {
-		t.Fatalf("path_deny=%d want 1", stats.PathDeny)
+	if stats.PathDeny != 1 || stats.InodeDeny != 1 {
+		t.Fatalf("stats=%+v", stats)
 	}
 	var v pathRule
-	if err := maps.PathDeny.Lookup(mustLPM("/etc/shadow"), &v); err != nil {
+	if err := maps.PathDeny.Lookup(mustLPM(path), &v); err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
 	if v.Decision != MapDecisionDeny || v.Action != VerdictOpen {
 		t.Fatalf("val=%+v", v)
+	}
+	ikey, err := pathToInodeKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := maps.InodeDeny.Lookup(ikey, &v); err != nil {
+		t.Fatalf("inode lookup: %v", err)
+	}
+	if v.Decision != MapDecisionDeny || v.Action != VerdictOpen {
+		t.Fatalf("inode val=%+v", v)
 	}
 }
 

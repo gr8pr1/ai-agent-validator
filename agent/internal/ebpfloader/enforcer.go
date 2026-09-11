@@ -142,6 +142,8 @@ func (l *EnforcerLoader) EnforcerMaps() policy.EnforcerMapSet {
 		PolicyCtrl: m["policy_ctrl"],
 		PathDeny:   m["path_deny"],
 		PathAllow:  m["path_allow"],
+		InodeDeny:  m["inode_deny"],
+		InodeAllow: m["inode_allow"],
 		IPDeny:     m["ip_deny"],
 		IPAllow:    m["ip_allow"],
 		PortDeny:   m["port_deny"],
