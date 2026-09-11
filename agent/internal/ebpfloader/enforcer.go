@@ -211,22 +211,48 @@ func (l *EnforcerLoader) EnforceStats() (EnforceStats, error) {
 	if !ok {
 		return EnforceStats{}, fmt.Errorf("enforce_stats map not found")
 	}
-	var totals [enforceStatCount]uint64
-	it := m.Iterate()
-	var k uint32
-	var v uint64
-	for it.Next(&k, &v) {
-		if k < enforceStatCount {
-			totals[k] += v
+	sum := func(key uint32) (uint64, error) {
+		var perCPU []uint64
+		if err := m.Lookup(key, &perCPU); err != nil {
+			return 0, err
 		}
+		var total uint64
+		for _, v := range perCPU {
+			total += v
+		}
+		return total, nil
+	}
+	fileOpen, err := sum(enforceStatFileOpen)
+	if err != nil {
+		return EnforceStats{}, err
+	}
+	gatePass, err := sum(enforceStatGatePass)
+	if err != nil {
+		return EnforceStats{}, err
+	}
+	openatFmod, err := sum(enforceStatOpenatFmod)
+	if err != nil {
+		return EnforceStats{}, err
+	}
+	openatDeny, err := sum(enforceStatOpenatDeny)
+	if err != nil {
+		return EnforceStats{}, err
+	}
+	connectFmod, err := sum(enforceStatConnectFmod)
+	if err != nil {
+		return EnforceStats{}, err
+	}
+	connectDeny, err := sum(enforceStatConnectDeny)
+	if err != nil {
+		return EnforceStats{}, err
 	}
 	return EnforceStats{
-		FileOpenCalls: totals[enforceStatFileOpen],
-		GatePass:      totals[enforceStatGatePass],
-		OpenatFmod:    totals[enforceStatOpenatFmod],
-		OpenatDeny:    totals[enforceStatOpenatDeny],
-		ConnectFmod:   totals[enforceStatConnectFmod],
-		ConnectDeny:   totals[enforceStatConnectDeny],
+		FileOpenCalls: fileOpen,
+		GatePass:      gatePass,
+		OpenatFmod:    openatFmod,
+		OpenatDeny:    openatDeny,
+		ConnectFmod:   connectFmod,
+		ConnectDeny:   connectDeny,
 	}, nil
 }
 

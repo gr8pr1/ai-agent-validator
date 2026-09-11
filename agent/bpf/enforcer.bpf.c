@@ -593,23 +593,32 @@ static __always_inline int enforce_connect_syscall(struct sockaddr *addr, int ad
 	return rc;
 }
 
-SEC("fmod_ret/__x64_sys_openat")
+static __always_inline struct pt_regs *syscall_regs(const struct pt_regs *regs)
+{
+	return (struct pt_regs *)PT_REGS_SYSCALL_REGS(regs);
+}
+
+SEC("fmod_ret.s/__x64_sys_openat")
 int BPF_PROG(enforce_openat_entry, const struct pt_regs *regs)
 {
+	struct pt_regs *sr = syscall_regs(regs);
+
 	stat_inc(STAT_OPENAT_FMOD);
 	if (!enforce_gate())
 		return 0;
-	return enforce_openat_path((const char *)PT_REGS_PARM2_CORE(regs),
-				   (__u32)PT_REGS_PARM3_CORE(regs));
+	return enforce_openat_path((const char *)PT_REGS_PARM2_SYSCALL(sr),
+				   (__u32)PT_REGS_PARM3_SYSCALL(sr));
 }
 
-SEC("fmod_ret/__x64_sys_connect")
+SEC("fmod_ret.s/__x64_sys_connect")
 int BPF_PROG(enforce_connect_entry, const struct pt_regs *regs)
 {
+	struct pt_regs *sr = syscall_regs(regs);
+
 	stat_inc(STAT_CONNECT_FMOD);
 	if (!enforce_gate())
 		return 0;
-	return enforce_connect_syscall((struct sockaddr *)PT_REGS_PARM2_CORE(regs),
-				       (int)PT_REGS_PARM3_CORE(regs));
+	return enforce_connect_syscall((struct sockaddr *)PT_REGS_PARM2_SYSCALL(sr),
+				       (int)PT_REGS_PARM3_SYSCALL(sr));
 }
 #endif
