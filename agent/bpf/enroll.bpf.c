@@ -224,7 +224,14 @@ int handle_fork(struct trace_event_raw_sched_process_fork *ctx)
 	__u32 child_pid = (__u32)ctx->child_pid;
 	__u32 parent_pid = (__u32)ctx->parent_pid;
 	char child_comm[16];
+	__u8 tagged = 1;
+
 	bpf_probe_read_kernel(child_comm, sizeof(child_comm), &ctx->child_comm);
+
+	// Propagate advisory tag in-kernel so LSM enforcement sees forked children
+	// before userspace processes the ringbuf event.
+	if (is_tagged_pid(parent_pid))
+		bpf_map_update_elem(&tagged_pids, &child_pid, &tagged, BPF_ANY);
 
 	struct enroll_event e;
 	__builtin_memset(&e, 0, EVENT_HEADER_SIZE);

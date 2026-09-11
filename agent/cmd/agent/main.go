@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cilium/ebpf"
 	cringbuf "github.com/cilium/ebpf/ringbuf"
 
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/config"
@@ -110,7 +111,14 @@ func main() {
 			log.Error("embedded enforcer BPF object is empty; run `make bpf` first")
 			os.Exit(1)
 		}
-		enforcer, err = ebpfloader.LoadEnforcer(enforcerObject)
+		tagMap := loader.TaggedPidsMap()
+		if tagMap == nil {
+			log.Error("enroll tagged_pids map missing; cannot wire kernel enforcement")
+			os.Exit(1)
+		}
+		enforcer, err = ebpfloader.LoadEnforcer(enforcerObject, map[string]*ebpf.Map{
+			"tagged_pids": tagMap,
+		})
 		if err != nil {
 			log.Error("loading enforcer BPF", "err", err)
 			os.Exit(1)
@@ -343,6 +351,9 @@ func applyLivePolicy(enforcer *ebpfloader.EnforcerLoader, cp *policy.CompiledPol
 	}
 	if stats.Skipped > 0 {
 		log.Warn("kernel map load skipped rules with uid/binary/cgroup predicates", "skipped", stats.Skipped)
+	}
+	if len(cp.Live) > 0 && stats.PathDeny+stats.PathAllow+stats.IPDeny+stats.IPAllow+stats.PortDeny+stats.PortAllow == 0 {
+		log.Warn("kernel enforcement maps are empty despite live rules; ensure rules use state: enforced and kernel-loadable predicates")
 	}
 	return stats, nil
 }

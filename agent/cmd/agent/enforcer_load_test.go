@@ -17,7 +17,7 @@ func TestEnforcerBPFSkeleton(t *testing.T) {
 		t.Fatal("embedded enforcer BPF object is empty; run `make bpf` first")
 	}
 
-	loader, err := ebpfloader.LoadEnforcer(enforcerObject)
+	loader, err := ebpfloader.LoadEnforcer(enforcerObject, nil)
 	if err != nil {
 		t.Fatalf("load enforcer BPF: %v", err)
 	}

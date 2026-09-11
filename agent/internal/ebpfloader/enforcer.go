@@ -39,7 +39,9 @@ type EnforcerLoader struct {
 }
 
 // LoadEnforcer parses and loads the enforcer BPF object into the kernel.
-func LoadEnforcer(obj []byte) (*EnforcerLoader, error) {
+// When replacements includes "tagged_pids", the enforcer shares the enroll
+// advisory tag map so LSM hooks observe the same tagged set as tracepoints.
+func LoadEnforcer(obj []byte, replacements map[string]*ebpf.Map) (*EnforcerLoader, error) {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("remove memlock: %w", err)
 	}
@@ -47,7 +49,10 @@ func LoadEnforcer(obj []byte) (*EnforcerLoader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load enforcer spec: %w", err)
 	}
-	coll, err := ebpf.NewCollection(spec)
+	opts := ebpf.CollectionOptions{
+		MapReplacements: replacements,
+	}
+	coll, err := ebpf.NewCollectionWithOptions(spec, opts)
 	if err != nil {
 		return nil, fmt.Errorf("new enforcer collection: %w", err)
 	}

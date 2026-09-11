@@ -79,6 +79,14 @@ func (l *Loader) Reader() (*cringbuf.Reader, error) {
 	return cringbuf.NewReader(m)
 }
 
+// TaggedPidsMap returns the advisory tagged_pids map (shared with enforcer when loaded).
+func (l *Loader) TaggedPidsMap() *ebpf.Map {
+	if l.coll == nil {
+		return nil
+	}
+	return l.coll.Maps["tagged_pids"]
+}
+
 // TagPID marks pid in the advisory kernel tag map.
 func (l *Loader) TagPID(pid uint32) error {
 	m, ok := l.coll.Maps["tagged_pids"]

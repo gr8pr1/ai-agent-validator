@@ -87,8 +87,8 @@ func (e *Engine) Handle(ev *event.Event) {
 }
 
 func (e *Engine) tagKernel(pid uint32) {
-	if err := e.tagger.TagPID(pid); err != nil && e.debug {
-		e.log.Debug("tag pid in kernel map", "pid", pid, "err", err)
+	if err := e.tagger.TagPID(pid); err != nil {
+		e.log.Warn("tag pid in kernel map", "pid", pid, "err", err)
 	}
 }
 
