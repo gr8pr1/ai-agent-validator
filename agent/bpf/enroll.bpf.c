@@ -116,6 +116,13 @@ struct pending_open {
 	char path[MAX_PATH];
 };
 
+struct pending_connect {
+	__u16 port;
+	__u8 ip_len;
+	__u8 _pad;
+	__u8 ip[16];
+};
+
 // Staged openat path keyed by pid; sys_enter_openat runs before LSM file_open.
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -123,6 +130,14 @@ struct {
 	__type(key, __u32);
 	__type(value, struct pending_open);
 } pending_open_paths SEC(".maps");
+
+// Staged connect target keyed by pid; sys_enter_connect runs before fmod_ret connect.
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 4096);
+	__type(key, __u32);
+	__type(value, struct pending_connect);
+} pending_connects SEC(".maps");
 
 static __always_inline void inc_drop(void)
 {
@@ -327,16 +342,28 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx)
 
 	if (family == AF_INET) {
 		struct sockaddr_in_simple sin;
+		struct pending_connect pc = {};
+
 		if (bpf_probe_read_user(&sin, sizeof(sin), addr_ptr) != 0)
 			return 0;
 		d->dport = port_host(sin.sin_port);
 		__builtin_memcpy(d->addr, &sin.sin_addr, 4);
+		pc.port = d->dport;
+		pc.ip_len = 4;
+		if (bpf_probe_read_kernel(pc.ip, 4, &sin.sin_addr) == 0)
+			bpf_map_update_elem(&pending_connects, &pid, &pc, BPF_ANY);
 	} else {
 		struct sockaddr_in6_simple sin6;
+		struct pending_connect pc = {};
+
 		if (bpf_probe_read_user(&sin6, sizeof(sin6), addr_ptr) != 0)
 			return 0;
 		d->dport = port_host(sin6.sin6_port);
 		__builtin_memcpy(d->addr, sin6.sin6_addr, 16);
+		pc.port = d->dport;
+		pc.ip_len = 16;
+		if (bpf_probe_read_kernel(pc.ip, 16, sin6.sin6_addr) == 0)
+			bpf_map_update_elem(&pending_connects, &pid, &pc, BPF_ANY);
 	}
 
 	emit_action(b);

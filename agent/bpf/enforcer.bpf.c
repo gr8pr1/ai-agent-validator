@@ -76,6 +76,13 @@ struct pending_open {
 	char path[MAX_PATH];
 };
 
+struct pending_connect {
+	__u16 port;
+	__u8 ip_len;
+	__u8 _pad;
+	__u8 ip[16];
+};
+
 struct inode_key {
 	__u64 ino;
 	__u32 dev;
@@ -116,6 +123,13 @@ struct {
 	__type(key, __u32);
 	__type(value, struct pending_open);
 } pending_open_paths SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 4096);
+	__type(key, __u32);
+	__type(value, struct pending_connect);
+} pending_connects SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -189,13 +203,6 @@ struct {
 	__type(value, struct lpm_key);
 } lpm_scratch SEC(".maps");
 
-struct {
-	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, 1);
-	__type(key, __u32);
-	__type(value, char[MAX_PATH]);
-} path_scratch SEC(".maps");
-
 #define STAT_FILE_OPEN    0
 #define STAT_GATE_PASS    1
 #define STAT_OPENAT_FMOD  2
@@ -241,27 +248,11 @@ static __always_inline struct lpm_key *scratch_lpm_key(void)
 	return bpf_map_lookup_elem(&lpm_scratch, &k);
 }
 
-static __always_inline char *scratch_path(void)
-{
-	__u32 k = 0;
-	return bpf_map_lookup_elem(&path_scratch, &k);
-}
-
 static __always_inline void stat_inc(__u32 idx)
 {
 	__u64 *v = bpf_map_lookup_elem(&enforce_stats, &idx);
 	if (v)
 		__sync_fetch_and_add(v, 1);
-}
-
-static __always_inline int path_len_from_user_str(long ret)
-{
-	if (ret <= 1)
-		return -1;
-	ret--;
-	if (ret >= MAX_PATH)
-		return MAX_PATH - 1;
-	return (int)ret;
 }
 
 static __always_inline __u16 port_host(__be16 p)
@@ -401,40 +392,14 @@ static __always_inline int port_not_in_rule_matches(struct port_rule *dpt, struc
 	return 1;
 }
 
-static __always_inline int enforce_connect(struct sockaddr *address, int addrlen)
+static __always_inline int enforce_connect_parsed(__u8 *ip, int ip_len, __u16 port)
 {
-	__u16 family;
 	struct path_rule *dip, *aip;
 	struct port_rule *dpt, *apt, *dpt_catch;
-	__u8 ip[16] = {};
-	__u16 port = 0;
 	__u16 port_catch_key = 0;
-	int ip_len = 0;
 
-	if (bpf_probe_read_user(&family, sizeof(family), address) != 0)
+	if (!ip || ip_len <= 0)
 		return 0;
-
-	if (family == AF_INET) {
-		struct sockaddr_in_simple sin;
-
-		if (bpf_probe_read_user(&sin, sizeof(sin), address) != 0)
-			return 0;
-		port = port_host(sin.sin_port);
-		if (bpf_probe_read_user(ip, 4, &sin.sin_addr) != 0)
-			return 0;
-		ip_len = 4;
-	} else if (family == AF_INET6) {
-		struct sockaddr_in6_simple sin6;
-
-		if (bpf_probe_read_user(&sin6, sizeof(sin6), address) != 0)
-			return 0;
-		port = port_host(sin6.sin6_port);
-		if (bpf_probe_read_user(ip, 16, sin6.sin6_addr) != 0)
-			return 0;
-		ip_len = 16;
-	} else {
-		return 0;
-	}
 
 	dip = ip_lpm_lookup(&ip_deny, ip, ip_len);
 	aip = ip_lpm_lookup(&ip_allow, ip, ip_len);
@@ -487,6 +452,42 @@ static __always_inline int enforce_connect(struct sockaddr *address, int addrlen
 	}
 
 	return 0;
+}
+
+static __always_inline int enforce_connect(struct sockaddr *address, int addrlen)
+{
+	__u16 family;
+	__u8 ip[16] = {};
+	__u16 port = 0;
+	int ip_len = 0;
+
+	(void)addrlen;
+	if (bpf_probe_read_user(&family, sizeof(family), address) != 0)
+		return 0;
+
+	if (family == AF_INET) {
+		struct sockaddr_in_simple sin;
+
+		if (bpf_probe_read_user(&sin, sizeof(sin), address) != 0)
+			return 0;
+		port = port_host(sin.sin_port);
+		if (bpf_probe_read_user(ip, 4, &sin.sin_addr) != 0)
+			return 0;
+		ip_len = 4;
+	} else if (family == AF_INET6) {
+		struct sockaddr_in6_simple sin6;
+
+		if (bpf_probe_read_user(&sin6, sizeof(sin6), address) != 0)
+			return 0;
+		port = port_host(sin6.sin6_port);
+		if (bpf_probe_read_user(ip, 16, sin6.sin6_addr) != 0)
+			return 0;
+		ip_len = 16;
+	} else {
+		return 0;
+	}
+
+	return enforce_connect_parsed(ip, ip_len, port);
 }
 
 // file_open matches paths staged by enroll sys_enter_openat (pending_open_paths).
@@ -564,61 +565,59 @@ int BPF_PROG(enforce_socket_connect, struct socket *sock, struct sockaddr *addre
 
 // Syscall fmod_ret hooks block at entry and do not depend on bpf being in the
 // active LSM list (AttachLSM can succeed while hooks never run without lsm=...,bpf).
+// Paths and connect targets are staged by enroll sys_enter_* tracepoints (same pid
+// key) which run before these syscall wrappers; no PT_REGS or user reads here.
 #if defined(__TARGET_ARCH_x86) || defined(bpf_target_x86)
-static __always_inline int enforce_openat_path(const char *path, __u32 flags)
+static __always_inline int enforce_openat_from_pending(__u32 pid)
 {
-	char *buf = scratch_path();
-	int len, write_intent, rc;
+	struct pending_open *po;
+	int write_intent, rc;
 
-	if (!buf || !path)
+	po = bpf_map_lookup_elem(&pending_open_paths, &pid);
+	if (!po || po->len <= 0)
 		return 0;
 
-	len = path_len_from_user_str(bpf_probe_read_user_str(buf, MAX_PATH, path));
-	if (len <= 0)
-		return 0;
-
-	write_intent = (flags & O_ACCMODE) != 0;
-	rc = enforce_path(buf, len, VERDICT_OPEN, write_intent);
+	write_intent = (po->open_flags & O_ACCMODE) != 0;
+	rc = enforce_path(po->path, po->len, VERDICT_OPEN, write_intent);
 	if (rc)
 		stat_inc(STAT_OPENAT_DENY);
 	return rc;
 }
 
-static __always_inline int enforce_connect_syscall(struct sockaddr *addr, int addrlen)
+static __always_inline int enforce_connect_from_pending(__u32 pid)
 {
-	int rc = enforce_connect(addr, addrlen);
+	struct pending_connect *pc;
+	int rc;
 
+	pc = bpf_map_lookup_elem(&pending_connects, &pid);
+	if (!pc || pc->ip_len == 0)
+		return 0;
+
+	rc = enforce_connect_parsed(pc->ip, pc->ip_len, pc->port);
 	if (rc)
 		stat_inc(STAT_CONNECT_DENY);
 	return rc;
 }
 
-static __always_inline struct pt_regs *syscall_regs(const struct pt_regs *regs)
-{
-	return (struct pt_regs *)PT_REGS_SYSCALL_REGS(regs);
-}
-
 SEC("fmod_ret/__x64_sys_openat")
-int BPF_PROG(enforce_openat_entry, const struct pt_regs *regs)
+int BPF_PROG(enforce_openat_entry)
 {
-	struct pt_regs *sr = syscall_regs(regs);
+	__u32 pid = bpf_get_current_pid_tgid() >> 32;
 
 	stat_inc(STAT_OPENAT_FMOD);
 	if (!enforce_gate())
 		return 0;
-	return enforce_openat_path((const char *)PT_REGS_PARM2_SYSCALL(sr),
-				   (__u32)PT_REGS_PARM3_SYSCALL(sr));
+	return enforce_openat_from_pending(pid);
 }
 
 SEC("fmod_ret/__x64_sys_connect")
-int BPF_PROG(enforce_connect_entry, const struct pt_regs *regs)
+int BPF_PROG(enforce_connect_entry)
 {
-	struct pt_regs *sr = syscall_regs(regs);
+	__u32 pid = bpf_get_current_pid_tgid() >> 32;
 
 	stat_inc(STAT_CONNECT_FMOD);
 	if (!enforce_gate())
 		return 0;
-	return enforce_connect_syscall((struct sockaddr *)PT_REGS_PARM2_SYSCALL(sr),
-				       (int)PT_REGS_PARM3_SYSCALL(sr));
+	return enforce_connect_from_pending(pid);
 }
 #endif
