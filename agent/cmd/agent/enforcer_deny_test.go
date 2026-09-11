@@ -1,9 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"errors"
-	"fmt"
 	"os"
+	"os/exec"
 	"runtime"
 	"syscall"
 	"testing"
@@ -23,6 +24,7 @@ const testDenyRuleID = "deny-open-test"
 // opening a world-readable temp file to fail with EPERM and emit a deny_verdict.
 // Uses a dedicated path (not /etc/shadow) so root-only DAC does not mask a
 // missing enforcement hook. Requires root and amd64 fmod_ret support.
+// Stop aiblocker-agent before running: chained fmod_ret programs override returns.
 func TestEnforcerDenyOpenEPERM(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("requires root; run: sudo -E go test ./cmd/agent -run TestEnforcerDenyOpenEPERM")
@@ -32,6 +34,9 @@ func TestEnforcerDenyOpenEPERM(t *testing.T) {
 	}
 	if len(enforcerObject) == 0 || len(bpfObject) == 0 {
 		t.Fatal("embedded BPF objects empty; run `make bpf` first")
+	}
+	if agentProcessRunning() {
+		t.Skip("stop aiblocker-agent before running; concurrent fmod_ret programs can override -EPERM")
 	}
 
 	target, err := os.CreateTemp("", "aiblocker-deny-test-*")
@@ -98,13 +103,19 @@ func TestEnforcerDenyOpenEPERM(t *testing.T) {
 	}
 	defer denyReader.Close()
 
-	_, err = syscall.Open(targetPath, syscall.O_RDONLY, 0)
+	fd, err := syscall.Open(targetPath, syscall.O_RDONLY, 0)
+	if fd >= 0 {
+		_ = syscall.Close(fd)
+	}
+	stats, _ := enforcer.EnforceStats()
 	if err == nil {
-		stats, _ := enforcer.EnforceStats()
+		if stats.OpenatDeny > 0 {
+			t.Fatalf("fmod_ret deny fired (OpenatDeny=%d) but open succeeded on %s — stop aiblocker-agent if running; chained fmod_ret can override -EPERM (stats=%+v)", stats.OpenatDeny, targetPath, stats)
+		}
 		t.Fatalf("expected EPERM opening %s (enforce_stats=%+v)", targetPath, stats)
 	}
 	if !errors.Is(err, syscall.EPERM) {
-		t.Fatalf("expected EPERM, got %v", err)
+		t.Fatalf("expected EPERM, got %v (enforce_stats=%+v)", err, stats)
 	}
 
 	v := readDenyVerdict(t, denyReader, 3*time.Second)
@@ -121,6 +132,14 @@ func TestEnforcerDenyOpenEPERM(t *testing.T) {
 	if v.Path != targetPath {
 		t.Fatalf("path=%q want %s", v.Path, targetPath)
 	}
+}
+
+func agentProcessRunning() bool {
+	if _, err := exec.LookPath("pgrep"); err != nil {
+		return false
+	}
+	out, err := exec.Command("pgrep", "-x", "aiblocker-agent").Output()
+	return err == nil && len(bytes.TrimSpace(out)) > 0
 }
 
 func readDenyVerdict(t *testing.T, r *cringbuf.Reader, timeout time.Duration) deny.Verdict {
@@ -141,6 +160,6 @@ func readDenyVerdict(t *testing.T, r *cringbuf.Reader, timeout time.Duration) de
 		}
 		return v
 	}
-	t.Fatal(fmt.Sprintf("timeout waiting for deny verdict"))
+	t.Fatal("timeout waiting for deny verdict")
 	return deny.Verdict{} // unreachable; satisfies compiler after t.Fatal
 }
