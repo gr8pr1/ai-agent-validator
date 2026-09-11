@@ -11,7 +11,7 @@ all: bpf build build-policyctl
 # Compile eBPF objects and stage them for go:embed.
 bpf:
 	cd bpf && $(CLANG) $(BPF_CFLAGS) -c enroll.bpf.c -o enroll.bpf.o
-	cd bpf && $(CLANG) $(BPF_CFLAGS) -c enforcer.bpf.c -o enforcer.bpf.o
+	cd bpf && $(CLANG) $(BPF_CFLAGS) -mllvm -bpf-stack-size=4096 -c enforcer.bpf.c -o enforcer.bpf.o
 	mkdir -p cmd/agent/bpf
 	cp bpf/enroll.bpf.o cmd/agent/bpf/
 	cp bpf/enforcer.bpf.o cmd/agent/bpf/
