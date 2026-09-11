@@ -70,10 +70,6 @@ struct deny_verdict {
 	char path[MAX_PATH];
 };
 
-struct path_buf {
-	char data[MAX_PATH];
-};
-
 struct pending_open {
 	__u16 len;
 	__u16 open_flags;
@@ -170,13 +166,6 @@ struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, 1);
 	__type(key, __u32);
-	__type(value, struct path_buf);
-} path_scratch SEC(".maps");
-
-struct {
-	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-	__uint(max_entries, 1);
-	__type(key, __u32);
 	__type(value, struct lpm_key);
 } lpm_scratch SEC(".maps");
 
@@ -204,16 +193,6 @@ static __always_inline int enforce_gate(void)
 	return 1;
 }
 
-static __always_inline char *scratch_path(void)
-{
-	__u32 k = 0;
-	struct path_buf *b = bpf_map_lookup_elem(&path_scratch, &k);
-
-	if (!b)
-		return NULL;
-	return b->data;
-}
-
 static __always_inline struct lpm_key *scratch_lpm_key(void)
 {
 	__u32 k = 0;
@@ -223,18 +202,6 @@ static __always_inline struct lpm_key *scratch_lpm_key(void)
 static __always_inline __u16 port_host(__be16 p)
 {
 	return __builtin_bswap16(p);
-}
-
-static __always_inline int path_len_from_d_path(long ret)
-{
-	// bpf_d_path returns strlen(path) + 1 (includes the trailing NUL).
-	// Policy LPM keys are stored without the NUL (see pathPatternToLPM).
-	if (ret <= 1)
-		return -1;
-	ret--;
-	if (ret >= MAX_PATH)
-		return MAX_PATH - 1;
-	return (int)ret;
 }
 
 static __always_inline struct path_rule *path_lpm_lookup(void *map, const char *path, int len)
@@ -438,48 +405,32 @@ static __always_inline int enforce_connect(struct sockaddr *address, int addrlen
 	return 0;
 }
 
+// file_open matches paths staged by enroll sys_enter_openat (pending_open_paths).
+// bpf_d_path is not used here: it fails verifier on kernel 6.8 and did not
+// resolve reliably in this LSM hook context anyway.
 SEC("lsm/file_open")
 int BPF_PROG(enforce_file_open, struct file *file)
 {
 	__u32 pid = bpf_get_current_pid_tgid() >> 32;
 	struct pending_open *po;
-	char *path_buf;
-	int len, write_intent;
-	__u32 f_flags;
-	struct path f_path;
-	long dpath_ret;
 	int rc;
+
+	(void)file;
 
 	if (!enforce_gate())
 		return 0;
 
 	po = bpf_map_lookup_elem(&pending_open_paths, &pid);
-	if (po && po->len > 0) {
-		write_intent = (po->open_flags & O_ACCMODE) != 0;
-		rc = enforce_path(po->path, po->len, VERDICT_OPEN, write_intent);
-		bpf_map_delete_elem(&pending_open_paths, &pid);
-		return rc;
-	}
-
-	path_buf = scratch_path();
-	if (!path_buf)
+	if (!po || po->len <= 0)
 		return 0;
 
-	BPF_CORE_READ_INTO(&f_path, file, f_path);
-	dpath_ret = bpf_d_path(&f_path, path_buf, MAX_PATH);
-	len = path_len_from_d_path(dpath_ret);
-	if (len < 0)
-		return 0;
-
-	f_flags = BPF_CORE_READ(file, f_flags);
-	write_intent = (f_flags & O_ACCMODE) != 0;
-
-	rc = enforce_path(path_buf, len, VERDICT_OPEN, write_intent);
+	rc = enforce_path(po->path, po->len, VERDICT_OPEN,
+			   (po->open_flags & O_ACCMODE) != 0);
+	bpf_map_delete_elem(&pending_open_paths, &pid);
 	return rc;
 }
 
-// Unlink/rename path resolution via bpf_d_path fails verifier when dentry paths
-// are assembled from hook args; open/connect enforcement covers v1 test bundle.
+// Unlink/rename path resolution deferred; open/connect enforcement covers v1 bundle.
 SEC("lsm/path_unlink")
 int BPF_PROG(enforce_path_unlink, const struct path *dir, struct dentry *dentry)
 {
