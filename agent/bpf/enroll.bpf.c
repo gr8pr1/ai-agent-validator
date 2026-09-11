@@ -110,6 +110,20 @@ struct {
 	__type(value, __u8);
 } tagged_pids SEC(".maps");
 
+struct pending_open {
+	__u16 len;
+	__u16 open_flags;
+	char path[MAX_PATH];
+};
+
+// Staged openat path keyed by pid; sys_enter_openat runs before LSM file_open.
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 4096);
+	__type(key, __u32);
+	__type(value, struct pending_open);
+} pending_open_paths SEC(".maps");
+
 static __always_inline void inc_drop(void)
 {
 	__u32 k = 0;
@@ -121,6 +135,16 @@ static __always_inline void inc_drop(void)
 static __always_inline __u16 port_host(__be16 p)
 {
 	return __builtin_bswap16((__u16)p);
+}
+
+static __always_inline int path_len_from_user_str(long ret)
+{
+	if (ret <= 1)
+		return -1;
+	ret--;
+	if (ret >= MAX_PATH)
+		return MAX_PATH - 1;
+	return (int)ret;
 }
 
 static __always_inline int is_tagged_pid(__u32 pid)
@@ -344,6 +368,18 @@ int handle_openat(struct trace_event_raw_sys_enter *ctx)
 	if (plen <= 0)
 		return 0;
 	e->argv_len = (plen >= MAX_PATH) ? MAX_PATH : (__u16)plen;
+
+	{
+		struct pending_open po = {};
+		int path_len = path_len_from_user_str(plen);
+
+		if (path_len > 0) {
+			po.len = (__u16)path_len;
+			po.open_flags = flags;
+			if (bpf_probe_read_kernel(po.path, path_len, path_buf) == 0)
+				bpf_map_update_elem(&pending_open_paths, &pid, &po, BPF_ANY);
+		}
+	}
 
 	emit_action(b);
 	return 0;

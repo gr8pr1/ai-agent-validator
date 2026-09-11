@@ -25,10 +25,8 @@ func FormatCompiledSummary(cp *CompiledPolicy) string {
 
 func joinRuleIDs(rules []CompiledRule) string {
 	ids := make([]string, len(rules))
-	seen := make(map[string]struct{}, len(rules))
 	for i, r := range rules {
 		ids[i] = r.ID
-		seen[r.ID] = struct{}{}
 	}
 	return strings.Join(ids, ", ")
 }

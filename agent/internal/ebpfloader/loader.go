@@ -87,6 +87,14 @@ func (l *Loader) TaggedPidsMap() *ebpf.Map {
 	return l.coll.Maps["tagged_pids"]
 }
 
+// PendingOpenPathsMap returns the openat staging map (shared with enforcer when loaded).
+func (l *Loader) PendingOpenPathsMap() *ebpf.Map {
+	if l.coll == nil {
+		return nil
+	}
+	return l.coll.Maps["pending_open_paths"]
+}
+
 // TagPID marks pid in the advisory kernel tag map.
 func (l *Loader) TagPID(pid uint32) error {
 	m, ok := l.coll.Maps["tagged_pids"]

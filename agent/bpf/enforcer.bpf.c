@@ -74,6 +74,12 @@ struct path_buf {
 	char data[MAX_PATH];
 };
 
+struct pending_open {
+	__u16 len;
+	__u16 open_flags;
+	char path[MAX_PATH];
+};
+
 struct sockaddr_in_simple {
 	__u16 sin_family;
 	__be16 sin_port;
@@ -101,6 +107,13 @@ struct {
 	__type(key, __u32);
 	__type(value, __u8);
 } tagged_pids SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 4096);
+	__type(key, __u32);
+	__type(value, struct pending_open);
+} pending_open_paths SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
@@ -428,20 +441,32 @@ static __always_inline int enforce_connect(struct sockaddr *address, int addrlen
 SEC("lsm/file_open")
 int BPF_PROG(enforce_file_open, struct file *file)
 {
+	__u32 pid = bpf_get_current_pid_tgid() >> 32;
+	struct pending_open *po;
 	char *path_buf;
 	int len, write_intent;
 	__u32 f_flags;
+	struct path f_path;
 	long dpath_ret;
 	int rc;
 
 	if (!enforce_gate())
 		return 0;
 
+	po = bpf_map_lookup_elem(&pending_open_paths, &pid);
+	if (po && po->len > 0) {
+		write_intent = (po->open_flags & O_ACCMODE) != 0;
+		rc = enforce_path(po->path, po->len, VERDICT_OPEN, write_intent);
+		bpf_map_delete_elem(&pending_open_paths, &pid);
+		return rc;
+	}
+
 	path_buf = scratch_path();
 	if (!path_buf)
 		return 0;
 
-	dpath_ret = bpf_d_path(&file->f_path, path_buf, MAX_PATH);
+	BPF_CORE_READ_INTO(&f_path, file, f_path);
+	dpath_ret = bpf_d_path(&f_path, path_buf, MAX_PATH);
 	len = path_len_from_d_path(dpath_ret);
 	if (len < 0)
 		return 0;

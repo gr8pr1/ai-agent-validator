@@ -116,8 +116,14 @@ func main() {
 			log.Error("enroll tagged_pids map missing; cannot wire kernel enforcement")
 			os.Exit(1)
 		}
+		pendingOpenMap := loader.PendingOpenPathsMap()
+		if pendingOpenMap == nil {
+			log.Error("enroll pending_open_paths map missing; cannot wire kernel enforcement")
+			os.Exit(1)
+		}
 		enforcer, err = ebpfloader.LoadEnforcer(enforcerObject, map[string]*ebpf.Map{
-			"tagged_pids": tagMap,
+			"tagged_pids":        tagMap,
+			"pending_open_paths": pendingOpenMap,
 		})
 		if err != nil {
 			log.Error("loading enforcer BPF", "err", err)
