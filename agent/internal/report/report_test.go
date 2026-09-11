@@ -30,6 +30,29 @@ func TestRenderShadowDenyText(t *testing.T) {
 	}
 }
 
+func TestRenderKernelDenyText(t *testing.T) {
+	r, err := New("text", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := r.render(Record{
+		Event:         "kernel_deny",
+		PID:           42,
+		AgentID:       "agent",
+		RuleID:        "deny-etc-shadow",
+		Action:        "open",
+		PolicyVersion: 1,
+		Reason:        "no shadow reads",
+		Path:          "/etc/shadow",
+	})
+	if !strings.Contains(line, "KERNEL_DENY") {
+		t.Fatalf("line: %s", line)
+	}
+	if !strings.Contains(line, "rule=deny-etc-shadow") || !strings.Contains(line, "action=open") {
+		t.Fatalf("line: %s", line)
+	}
+}
+
 func TestRenderShadowDenyJSON(t *testing.T) {
 	r, err := New("json", "")
 	if err != nil {

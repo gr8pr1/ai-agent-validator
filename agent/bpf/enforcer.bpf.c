@@ -323,7 +323,8 @@ static __always_inline int action_matches(__u8 rule_action, __u8 verdict, int wr
 	return 0;
 }
 
-static __always_inline void emit_deny(__u8 action, __u32 rule_hash)
+static __always_inline void emit_deny(__u8 action, __u32 rule_hash,
+				      const char *path, int path_len)
 {
 	struct deny_verdict *v = bpf_ringbuf_reserve(&deny_verdicts, sizeof(*v), 0);
 
@@ -333,12 +334,16 @@ static __always_inline void emit_deny(__u8 action, __u32 rule_hash)
 	v->pid = bpf_get_current_pid_tgid() >> 32;
 	v->rule_id_hash = rule_hash;
 	v->action = action;
+	__builtin_memset(v->path, 0, sizeof(v->path));
+	if (path && path_len > 0 && path_len < MAX_PATH)
+		bpf_probe_read_kernel(v->path, path_len, path);
 	bpf_ringbuf_submit(v, 0);
 }
 
 static __always_inline int enforce_open_verdict(struct path_rule *deny_rule,
 						struct path_rule *allow_rule,
-						__u8 verdict, int write_intent)
+						__u8 verdict, int write_intent,
+						const char *path, int path_len)
 {
 	int deny_match = 0;
 	__u32 deny_spec = 0;
@@ -357,7 +362,7 @@ static __always_inline int enforce_open_verdict(struct path_rule *deny_rule,
 		return 0;
 
 	if (deny_match) {
-		emit_deny(verdict, deny_hash);
+		emit_deny(verdict, deny_hash, path, path_len);
 		return -EPERM;
 	}
 	return 0;
@@ -385,7 +390,7 @@ static __always_inline int enforce_path(char *path, int len, __u8 verdict, int w
 
 	deny_rule = path_lpm_lookup(&path_deny, path, len);
 	allow_rule = path_lpm_lookup(&path_allow, path, len);
-	return enforce_open_verdict(deny_rule, allow_rule, verdict, write_intent);
+	return enforce_open_verdict(deny_rule, allow_rule, verdict, write_intent, path, len);
 }
 
 static __always_inline struct path_rule *ip_lpm_lookup(void *map, __u8 *ip, int ip_len)
@@ -456,7 +461,7 @@ static __always_inline int enforce_connect_parsed(__u8 *ip, int ip_len, __u16 po
 		__u32 hash = dip->rule_id_hash;
 		if (ip_not_in_rule_matches(dip, aip, hash) &&
 		    port_not_in_rule_matches(dpt_catch, apt, hash)) {
-			emit_deny(VERDICT_CONNECT, hash);
+			emit_deny(VERDICT_CONNECT, hash, NULL, 0);
 			return -EPERM;
 		}
 	}
@@ -466,21 +471,21 @@ static __always_inline int enforce_connect_parsed(__u8 *ip, int ip_len, __u16 po
 		    aip->specificity >= dip->specificity)
 			return 0;
 		if (ip_not_in_rule_matches(dip, aip, dip->rule_id_hash)) {
-			emit_deny(VERDICT_CONNECT, dip->rule_id_hash);
+			emit_deny(VERDICT_CONNECT, dip->rule_id_hash, NULL, 0);
 			return -EPERM;
 		}
 	}
 
 	if (dpt_catch && !dpt_catch->requires_ip &&
 	    port_not_in_rule_matches(dpt_catch, apt, dpt_catch->rule_id_hash)) {
-		emit_deny(VERDICT_CONNECT, dpt_catch->rule_id_hash);
+		emit_deny(VERDICT_CONNECT, dpt_catch->rule_id_hash, NULL, 0);
 		return -EPERM;
 	}
 
 	if (dip && connect_rule_matches(dip, dpt)) {
 		if (aip && aip->specificity > dip->specificity)
 			return 0;
-		emit_deny(VERDICT_CONNECT, dip->rule_id_hash);
+		emit_deny(VERDICT_CONNECT, dip->rule_id_hash, NULL, 0);
 		return -EPERM;
 	}
 
@@ -488,7 +493,7 @@ static __always_inline int enforce_connect_parsed(__u8 *ip, int ip_len, __u16 po
 	    dpt->action == VERDICT_CONNECT) {
 		if (apt && apt->rule_id_hash == dpt->rule_id_hash)
 			return 0;
-		emit_deny(VERDICT_CONNECT, dpt->rule_id_hash);
+		emit_deny(VERDICT_CONNECT, dpt->rule_id_hash, NULL, 0);
 		return -EPERM;
 	}
 
@@ -550,7 +555,7 @@ int BPF_PROG(enforce_file_open, struct file *file)
 
 	deny_rule = inode_rule_lookup(&inode_deny, file);
 	allow_rule = inode_rule_lookup(&inode_allow, file);
-	return enforce_open_verdict(deny_rule, allow_rule, VERDICT_OPEN, write_intent);
+	return enforce_open_verdict(deny_rule, allow_rule, VERDICT_OPEN, write_intent, NULL, 0);
 }
 
 // Unlink/rename path resolution deferred; open/connect enforcement covers v1 bundle.

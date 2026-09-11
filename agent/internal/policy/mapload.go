@@ -2,7 +2,6 @@ package policy
 
 import (
 	"fmt"
-	"hash/fnv"
 	"net"
 	"strings"
 	"syscall"
@@ -109,7 +108,7 @@ func LoadLive(cp *CompiledPolicy, maps EnforcerMapSet, ctrl PolicyCtrlValues) (L
 		if err != nil {
 			return stats, fmt.Errorf("rule %q: %w", rule.ID, err)
 		}
-		hash := ruleIDHash(rule.ID)
+		hash := RuleIDHash(rule.ID)
 
 		switch rule.Action {
 		case "connect":
@@ -482,8 +481,3 @@ func mapDecision(decision string) (uint8, error) {
 	}
 }
 
-func ruleIDHash(id string) uint32 {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(id))
-	return h.Sum32()
-}

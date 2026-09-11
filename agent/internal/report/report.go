@@ -16,7 +16,8 @@ import (
 // Record is one reportable observation.
 type Record struct {
 	Time          time.Time `json:"time"`
-	Event         string    `json:"event"` // exec|fork|exit|connect|open|unlink|rename|shadow_deny
+	Event         string    `json:"event"` // exec|fork|exit|connect|open|unlink|rename|shadow_deny|kernel_deny
+	Action        string    `json:"action,omitempty"` // open|connect|... for kernel_deny
 	Enrolled      bool      `json:"enrolled,omitempty"`
 	PID           uint32    `json:"pid"`
 	PPID          uint32    `json:"ppid,omitempty"`
@@ -97,6 +98,22 @@ func (r *Reporter) render(rec Record) string {
 	}
 	var b strings.Builder
 	switch rec.Event {
+	case "kernel_deny":
+		b.WriteString("KERNEL_DENY ")
+		fmt.Fprintf(&b, "pid=%d agent=%s rule=%s", rec.PID, rec.AgentID, rec.RuleID)
+		if rec.Action != "" {
+			fmt.Fprintf(&b, " action=%s", rec.Action)
+		}
+		if rec.PolicyVersion != 0 {
+			fmt.Fprintf(&b, " policy_v=%d", rec.PolicyVersion)
+		}
+		if rec.Reason != "" {
+			fmt.Fprintf(&b, " reason=%q", rec.Reason)
+		}
+		if rec.Path != "" {
+			fmt.Fprintf(&b, " path=%s", rec.Path)
+		}
+		return b.String()
 	case "shadow_deny":
 		b.WriteString("SHADOW_DENY ")
 		fmt.Fprintf(&b, "pid=%d agent=%s rule=%s source=%s policy_v=%d",

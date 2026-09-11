@@ -23,6 +23,7 @@ import (
 	cringbuf "github.com/cilium/ebpf/ringbuf"
 
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/config"
+	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/deny"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/debugsrv"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/ebpfloader"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/enricher"
@@ -175,6 +176,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	var denyReader *cringbuf.Reader
+	if enforcer != nil {
+		denyReader, err = enforcer.DenyReader()
+		if err != nil {
+			log.Error("opening deny ringbuf", "err", err)
+			os.Exit(1)
+		}
+		log.Info("kernel deny ringbuf consumer enabled")
+	}
+
 	// Build the pipeline.
 	rep, err := report.New(cfg.Report.Format, cfg.Report.AuditLog)
 	if err != nil {
@@ -184,7 +195,7 @@ func main() {
 	defer rep.Close()
 
 	if cfg.Report.AuditLog != "" {
-		log.Info("audit log enabled (tagged enroll/events only; debug traces stay in slog)", "path", cfg.Report.AuditLog)
+		log.Info("audit log enabled (tagged enroll/events + kernel_deny; debug traces stay in slog)", "path", cfg.Report.AuditLog)
 		rep.EmitAuditOnly(report.Record{Event: "session_start"})
 	}
 
@@ -245,18 +256,25 @@ func main() {
 
 	go backgroundTasks(ctx, eng, loader, tbl, cfg, polHolder, enforcer, log)
 
-	var closeReader sync.Once
-	closeRingbuf := func() {
-		closeReader.Do(func() {
+	var closeReaders sync.Once
+	closeRingbufs := func() {
+		closeReaders.Do(func() {
 			_ = reader.Close()
+			if denyReader != nil {
+				_ = denyReader.Close()
+			}
 		})
 	}
-	defer closeRingbuf()
+	defer closeRingbufs()
+
+	if denyReader != nil {
+		go deny.NewConsumer(rep, tbl, polHolder, log).Run(ctx, denyReader)
+	}
 
 	go func() {
 		<-ctx.Done()
 		log.Info("shutting down")
-		closeRingbuf()
+		closeRingbufs()
 	}()
 
 	log.Info("observing (press Ctrl-C to stop)")
