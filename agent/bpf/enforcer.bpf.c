@@ -228,9 +228,10 @@ struct {
 #define STAT_GATE_PASS    1
 #define STAT_OPENAT_FMOD  2
 #define STAT_OPENAT_DENY  3
-#define STAT_CONNECT_FMOD 4
-#define STAT_CONNECT_DENY 5
-#define STAT_ENFORCE_MAX  6
+#define STAT_CONNECT_FMOD   4
+#define STAT_CONNECT_DENY   5
+#define STAT_CGROUP_CONNECT 6
+#define STAT_ENFORCE_MAX    7
 
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -578,12 +579,13 @@ int enforce_cgroup_connect4(struct bpf_sock_addr *ctx)
 
 	ip4 = ctx->user_ip4;
 	user_port = ctx->user_port;
-	if (!enforce_gate())
+	if (!is_enforcement_active())
 		return 0;
 	// Hook can run before user_ip4 is populated; do not deny on empty target.
 	if (!ip4)
 		return 0;
 
+	stat_inc(STAT_CGROUP_CONNECT);
 	be32_to_ip_bytes(ip, 0, ip4);
 	return cgroup_connect_action(ip, 4, cgroup_user_port(user_port));
 }
@@ -600,11 +602,12 @@ int enforce_cgroup_connect6(struct bpf_sock_addr *ctx)
 	w2 = ctx->user_ip6[2];
 	w3 = ctx->user_ip6[3];
 	user_port = ctx->user_port;
-	if (!enforce_gate())
+	if (!is_enforcement_active())
 		return 0;
 	if (!w0 && !w1 && !w2 && !w3)
 		return 0;
 
+	stat_inc(STAT_CGROUP_CONNECT);
 	be32_to_ip_bytes(ip, 0, w0);
 	be32_to_ip_bytes(ip, 4, w1);
 	be32_to_ip_bytes(ip, 8, w2);

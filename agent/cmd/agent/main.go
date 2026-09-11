@@ -186,6 +186,7 @@ func main() {
 				os.Exit(1)
 			}
 			log.Info("attached cgroup egress enforcer", "cgroup", cgPath, "programs", cgroupAttached)
+			ebpfloader.WarnExtraCgroupPrograms(cgPath, log)
 		}
 	}
 
@@ -468,6 +469,7 @@ func enforceSnapshotFields(enforcer *ebpfloader.EnforcerLoader) []any {
 		"enforce_openat_deny", est.OpenatDeny,
 		"enforce_connect_fmod", est.ConnectFmod,
 		"enforce_connect_deny", est.ConnectDeny,
+		"enforce_cgroup_connect", est.CgroupConnect,
 	}
 }
 

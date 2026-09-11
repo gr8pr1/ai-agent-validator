@@ -25,7 +25,7 @@ var lsmPrograms = []lsmProgram{
 }
 
 // enforceStatCount must match STAT_ENFORCE_MAX in enforcer.bpf.c.
-const enforceStatCount = 6
+const enforceStatCount = 7
 
 const (
 	enforceStatFileOpen = iota
@@ -34,6 +34,7 @@ const (
 	enforceStatOpenatDeny
 	enforceStatConnectFmod
 	enforceStatConnectDeny
+	enforceStatCgroupConnect
 )
 
 // syscallPrograms are optional fmod_ret hooks (x86_64 only in the BPF object).
@@ -58,8 +59,9 @@ type EnforceStats struct {
 	GatePass       uint64
 	OpenatFmod     uint64
 	OpenatDeny     uint64
-	ConnectFmod    uint64
-	ConnectDeny    uint64
+	ConnectFmod      uint64
+	ConnectDeny      uint64
+	CgroupConnect    uint64
 }
 
 // PolicyCtrl is the userspace view of the policy_ctrl BPF map value.
@@ -289,6 +291,10 @@ func (l *EnforcerLoader) EnforceStats() (EnforceStats, error) {
 	if err != nil {
 		return EnforceStats{}, err
 	}
+	cgroupConnect, err := sum(enforceStatCgroupConnect)
+	if err != nil {
+		return EnforceStats{}, err
+	}
 	return EnforceStats{
 		FileOpenCalls: fileOpen,
 		GatePass:      gatePass,
@@ -296,6 +302,7 @@ func (l *EnforcerLoader) EnforceStats() (EnforceStats, error) {
 		OpenatDeny:    openatDeny,
 		ConnectFmod:   connectFmod,
 		ConnectDeny:   connectDeny,
+		CgroupConnect: cgroupConnect,
 	}, nil
 }
 
