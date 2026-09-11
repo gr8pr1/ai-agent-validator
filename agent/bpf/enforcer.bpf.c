@@ -561,35 +561,33 @@ static __always_inline int cgroup_connect4_impl(struct bpf_sock_addr *ctx)
 	if (!is_enforcement_active())
 		return 0;
 
-	ip4 = BPF_CORE_READ(ctx, user_ip4);
+	ip4 = ctx->user_ip4;
 	ip[0] = ip4 & 0xff;
 	ip[1] = (ip4 >> 8) & 0xff;
 	ip[2] = (ip4 >> 16) & 0xff;
 	ip[3] = (ip4 >> 24) & 0xff;
-	port = cgroup_user_port(BPF_CORE_READ(ctx, user_port));
+	port = cgroup_user_port(ctx->user_port);
 	return cgroup_connect_action(ip, 4, port);
 }
 
 static __always_inline int cgroup_connect6_impl(struct bpf_sock_addr *ctx)
 {
 	__u8 ip[16];
-	__u32 ip6[4];
 	__u16 port;
 	int i;
 
 	if (!is_enforcement_active())
 		return 0;
 
-	BPF_CORE_READ_INTO(ip6, ctx, user_ip6);
 	for (i = 0; i < 4; i++) {
-		__u32 w = ip6[i];
+		__u32 w = ctx->user_ip6[i];
 
 		ip[i * 4] = w & 0xff;
 		ip[i * 4 + 1] = (w >> 8) & 0xff;
 		ip[i * 4 + 2] = (w >> 16) & 0xff;
 		ip[i * 4 + 3] = (w >> 24) & 0xff;
 	}
-	port = cgroup_user_port(BPF_CORE_READ(ctx, user_port));
+	port = cgroup_user_port(ctx->user_port);
 	return cgroup_connect_action(ip, 16, port);
 }
 
