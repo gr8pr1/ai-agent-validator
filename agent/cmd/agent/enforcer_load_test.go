@@ -56,4 +56,9 @@ func TestEnforcerBPFSkeleton(t *testing.T) {
 			t.Fatalf("map %q not found", name)
 		}
 	}
+	for _, name := range []string{"enforce_cgroup_connect4", "enforce_cgroup_connect6"} {
+		if loader.Program(name) == nil {
+			t.Fatalf("program %q not found", name)
+		}
+	}
 }

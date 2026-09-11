@@ -42,6 +42,16 @@ var syscallPrograms = []string{
 	"enforce_connect_entry",
 }
 
+type cgroupProgram struct {
+	name   string
+	attach ebpf.AttachType
+}
+
+var cgroupPrograms = []cgroupProgram{
+	{name: "enforce_cgroup_connect4", attach: ebpf.AttachCGroupInet4Connect},
+	{name: "enforce_cgroup_connect6", attach: ebpf.AttachCGroupInet6Connect},
+}
+
 // EnforceStats aggregates per-CPU enforce_stats counters from the enforcer.
 type EnforceStats struct {
 	FileOpenCalls  uint64
@@ -104,6 +114,31 @@ func (l *EnforcerLoader) AttachSyscallEnforcement() ([]string, error) {
 		}
 		l.links = append(l.links, lnk)
 		attached = append(attached, "fmod_ret/"+name)
+	}
+	return attached, nil
+}
+
+// AttachCgroupEgress links cgroup/connect4 and connect6 programs to cgroupPath.
+func (l *EnforcerLoader) AttachCgroupEgress(cgroupPath string) ([]string, error) {
+	var attached []string
+	for _, cp := range cgroupPrograms {
+		prog, ok := l.coll.Programs[cp.name]
+		if !ok {
+			return attached, fmt.Errorf("cgroup program %q not found in enforcer object", cp.name)
+		}
+		lnk, err := link.AttachCgroup(link.CgroupOptions{
+			Path:    cgroupPath,
+			Attach:  cp.attach,
+			Program: prog,
+		})
+		if err != nil {
+			return attached, fmt.Errorf("attach cgroup %s to %s: %w", cp.name, cgroupPath, err)
+		}
+		l.links = append(l.links, lnk)
+		attached = append(attached, "cgroup/"+cp.name)
+	}
+	if len(attached) == 0 {
+		return attached, fmt.Errorf("no cgroup programs attached to %s", cgroupPath)
 	}
 	return attached, nil
 }
@@ -174,6 +209,14 @@ func (l *EnforcerLoader) DenyReader() (*cringbuf.Reader, error) {
 		return nil, fmt.Errorf("deny_verdicts map not found")
 	}
 	return cringbuf.NewReader(m)
+}
+
+// Program returns a loaded BPF program by name.
+func (l *EnforcerLoader) Program(name string) *ebpf.Program {
+	if l.coll == nil {
+		return nil
+	}
+	return l.coll.Programs[name]
 }
 
 // Maps exposes the underlying collection maps (for mapload in P3.2).

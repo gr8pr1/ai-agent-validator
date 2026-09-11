@@ -22,6 +22,7 @@ import (
 	"github.com/cilium/ebpf"
 	cringbuf "github.com/cilium/ebpf/ringbuf"
 
+	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/cgroup"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/config"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/deny"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/debugsrv"
@@ -168,6 +169,24 @@ func main() {
 			os.Exit(1)
 		}
 		log.Info("attached LSM enforcer", "programs", lsmAttached)
+
+		if cfg.ModeA.Enabled {
+			cgPath, err := cgroup.ResolveV2Dir(cfg.ModeA.CgroupContains)
+			if err != nil {
+				log.Error("Mode A cgroup egress required but cgroup dir not found", "err", err)
+				os.Exit(1)
+			}
+			cgroupAttached, err := enforcer.AttachCgroupEgress(cgPath)
+			if err != nil {
+				log.Error("attaching cgroup egress enforcer", "cgroup", cgPath, "err", err)
+				os.Exit(1)
+			}
+			if len(cgroupAttached) < 2 {
+				log.Error("expected cgroup connect4+connect6 programs", "attached", cgroupAttached)
+				os.Exit(1)
+			}
+			log.Info("attached cgroup egress enforcer", "cgroup", cgPath, "programs", cgroupAttached)
+		}
 	}
 
 	reader, err := loader.Reader()

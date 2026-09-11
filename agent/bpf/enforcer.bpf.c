@@ -536,6 +536,75 @@ static __always_inline int enforce_connect(struct sockaddr *address, int addrlen
 	return enforce_connect_parsed(ip, ip_len, port);
 }
 
+static __always_inline __u16 cgroup_user_port(__u32 user_port)
+{
+	return port_host((__be16)(user_port >> 16));
+}
+
+static __always_inline int cgroup_connect_action(__u8 *ip, int ip_len, __u16 port)
+{
+	int rc = enforce_connect_parsed(ip, ip_len, port);
+
+	if (rc) {
+		stat_inc(STAT_CONNECT_DENY);
+		return 1;
+	}
+	return 0;
+}
+
+static __always_inline int cgroup_connect4_impl(struct bpf_sock_addr *ctx)
+{
+	__u8 ip[4];
+	__u32 ip4;
+	__u16 port;
+
+	if (!is_enforcement_active())
+		return 0;
+
+	ip4 = BPF_CORE_READ(ctx, user_ip4);
+	ip[0] = ip4 & 0xff;
+	ip[1] = (ip4 >> 8) & 0xff;
+	ip[2] = (ip4 >> 16) & 0xff;
+	ip[3] = (ip4 >> 24) & 0xff;
+	port = cgroup_user_port(BPF_CORE_READ(ctx, user_port));
+	return cgroup_connect_action(ip, 4, port);
+}
+
+static __always_inline int cgroup_connect6_impl(struct bpf_sock_addr *ctx)
+{
+	__u8 ip[16];
+	__u32 ip6[4];
+	__u16 port;
+	int i;
+
+	if (!is_enforcement_active())
+		return 0;
+
+	BPF_CORE_READ_INTO(ip6, ctx, user_ip6);
+	for (i = 0; i < 4; i++) {
+		__u32 w = ip6[i];
+
+		ip[i * 4] = w & 0xff;
+		ip[i * 4 + 1] = (w >> 8) & 0xff;
+		ip[i * 4 + 2] = (w >> 16) & 0xff;
+		ip[i * 4 + 3] = (w >> 24) & 0xff;
+	}
+	port = cgroup_user_port(BPF_CORE_READ(ctx, user_port));
+	return cgroup_connect_action(ip, 16, port);
+}
+
+SEC("cgroup/connect4")
+int BPF_PROG(enforce_cgroup_connect4, struct bpf_sock_addr *sa)
+{
+	return cgroup_connect4_impl(sa);
+}
+
+SEC("cgroup/connect6")
+int BPF_PROG(enforce_cgroup_connect6, struct bpf_sock_addr *sa)
+{
+	return cgroup_connect6_impl(sa);
+}
+
 // file_open: inode deny/allow only when bpf LSM is active. Path rules are enforced
 // by fmod_ret/__x64_sys_openat (primary on hosts without bpf in the LSM stack).
 SEC("lsm/file_open")
