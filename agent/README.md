@@ -7,8 +7,8 @@ kernel** when `policy.mode: enforce`.
 
 Current milestones: **P0** (enroll & observe), **P0.5** (action capture),
 **P1** (policy schema + trusted loader via `policyctl`), **P2** (shadow-mode
-evaluation in userspace), and **P3** (kernel deny via fmod_ret + Mode A cgroup
-egress). See [architecture.md](../architecture.md) §13.
+evaluation in userspace), **P3** (kernel deny via fmod_ret + Mode A cgroup
+egress), and **P4** (denial feedback channel). See [architecture.md](../architecture.md) §13.
 
 ## Build
 
@@ -120,7 +120,11 @@ Enable shadow evaluation in `config.yaml` (`policy.enabled: true`, matching
 | `/debug/agents` | live tagged process trees |
 | `/debug/fingerprints` | the loaded fingerprint set |
 | `/debug/stats` | lifecycle + action counters, tracked pids |
+| `/debug/feedback` | recent `policy_feedback` records (`?agent_id=` or `?limit=`) |
 | `/healthz` | liveness |
+
+When `policy.mode: enforce`, kernel denies also emit structured `policy_feedback`
+records (stdout, audit JSONL, optional `feedback.path`). See architecture §5.6.
 
 ## Tests
 

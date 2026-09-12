@@ -167,6 +167,22 @@ policy:
 
 ---
 
+## `feedback` — denial feedback channel (P4)
+
+Structured do-not-retry records for agent runtimes when `policy.mode: enforce`.
+Each kernel deny emits a `policy_feedback` audit event with rule rationale,
+`retry: do-not-retry`, and appeal text (architecture §5.6).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `path` | string | `""` | Optional append-only JSONL sink for shims |
+| `max_per_agent` | int | `32` | Ring buffer size per `agent_id` in memory |
+
+Query recent feedback via debug HTTP: `GET /debug/feedback?agent_id=agent` or
+`GET /debug/feedback?limit=20` (requires `debug.enabled: true`).
+
+---
+
 ## `report` — output sinks
 
 | Field | Type | Default | Description |

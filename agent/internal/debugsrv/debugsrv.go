@@ -6,18 +6,21 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/enroll"
+	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/feedback"
 )
 
 // Server serves debug endpoints backed by the enrollment engine.
 type Server struct {
 	eng *enroll.Engine
+	fb  *feedback.Hub
 	log *slog.Logger
 }
 
-func New(eng *enroll.Engine, log *slog.Logger) *Server {
-	return &Server{eng: eng, log: log}
+func New(eng *enroll.Engine, fb *feedback.Hub, log *slog.Logger) *Server {
+	return &Server{eng: eng, fb: fb, log: log}
 }
 
 // Start launches the HTTP server in a goroutine. It returns the *http.Server so
@@ -27,6 +30,7 @@ func (s *Server) Start(addr string) *http.Server {
 	mux.HandleFunc("/debug/agents", s.handleAgents)
 	mux.HandleFunc("/debug/fingerprints", s.handleFingerprints)
 	mux.HandleFunc("/debug/stats", s.handleStats)
+	mux.HandleFunc("/debug/feedback", s.handleFeedback)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok\n")) })
 
 	srv := &http.Server{Addr: addr, Handler: mux}
@@ -55,6 +59,24 @@ func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
 		"agents":       agents,
 		"tracked_pids": s.eng.Table().Len(),
 	})
+}
+
+func (s *Server) handleFeedback(w http.ResponseWriter, r *http.Request) {
+	if s.fb == nil {
+		http.Error(w, "feedback not enabled (requires policy.mode: enforce)", http.StatusNotFound)
+		return
+	}
+	if agentID := r.URL.Query().Get("agent_id"); agentID != "" {
+		writeJSON(w, s.fb.ForAgent(agentID))
+		return
+	}
+	limit := 20
+	if q := r.URL.Query().Get("limit"); q != "" {
+		if n, err := strconv.Atoi(q); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	writeJSON(w, s.fb.Recent(limit))
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

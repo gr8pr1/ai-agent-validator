@@ -17,9 +17,10 @@ type Config struct {
 	ModeA     ModeAConfig   `yaml:"mode_a"`
 	ModeB     ModeBConfig   `yaml:"mode_b"`
 	Actions   ActionsConfig `yaml:"actions"`
-	Policy    PolicyConfig  `yaml:"policy"`
-	Report    ReportConfig  `yaml:"report"`
-	Debug     DebugConfig   `yaml:"debug"`
+	Policy    PolicyConfig   `yaml:"policy"`
+	Feedback  FeedbackConfig `yaml:"feedback"`
+	Report    ReportConfig   `yaml:"report"`
+	Debug     DebugConfig    `yaml:"debug"`
 }
 
 // ModeAConfig controls controlled-spawn cgroup enrollment.
@@ -96,6 +97,13 @@ type ReportConfig struct {
 	SnapshotSec int    `yaml:"snapshot_sec"` // periodic snapshot interval; 0 disables
 }
 
+// FeedbackConfig controls the P4 denial feedback channel (architecture §5.6).
+type FeedbackConfig struct {
+	Enabled     bool   `yaml:"enabled"`
+	Path        string `yaml:"path"`         // optional JSONL sink for agent shims
+	MaxPerAgent int    `yaml:"max_per_agent"` // ring size per agent_id; default 32
+}
+
 // DebugConfig controls the debug surface.
 type DebugConfig struct {
 	Enabled  bool   `yaml:"enabled"`
@@ -125,6 +133,9 @@ func Default() Config {
 			Enabled:   false,
 			StorePath: "./policy-store",
 			ReloadSec: 15,
+		},
+		Feedback: FeedbackConfig{
+			MaxPerAgent: 32,
 		},
 		Report: ReportConfig{
 			Format:      "text",

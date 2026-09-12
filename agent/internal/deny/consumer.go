@@ -10,6 +10,7 @@ import (
 
 	cringbuf "github.com/cilium/ebpf/ringbuf"
 
+	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/feedback"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/policy"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/proctable"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/report"
@@ -20,12 +21,13 @@ type Consumer struct {
 	rep *report.Reporter
 	tbl *proctable.Table
 	pol *policy.Holder
+	hub *feedback.Hub
 	log *slog.Logger
 }
 
 // NewConsumer builds a deny ringbuf consumer.
-func NewConsumer(rep *report.Reporter, tbl *proctable.Table, pol *policy.Holder, log *slog.Logger) *Consumer {
-	return &Consumer{rep: rep, tbl: tbl, pol: pol, log: log}
+func NewConsumer(rep *report.Reporter, tbl *proctable.Table, pol *policy.Holder, hub *feedback.Hub, log *slog.Logger) *Consumer {
+	return &Consumer{rep: rep, tbl: tbl, pol: pol, hub: hub, log: log}
 }
 
 // Run reads deny verdicts until ctx is cancelled or the reader closes.
@@ -77,6 +79,21 @@ func (c *Consumer) emit(v Verdict) {
 	}
 	if c.rep != nil {
 		c.rep.Emit(rec)
+	}
+	if c.hub != nil {
+		fd := feedback.NewDecision(v.TimestampNS, v.PID, action, v.Path, rec.AgentID, rec.RuleID, rec.Reason, rec.PolicyVersion)
+		c.hub.Record(fd)
+		if c.rep != nil {
+			c.rep.Emit(report.Record{
+				Time:     fd.Time,
+				Event:    "policy_feedback",
+				PID:      fd.PID,
+				AgentID:  fd.AgentID,
+				RuleID:   fd.MatchedRule,
+				Reason:   fd.Reason,
+				Feedback: &fd,
+			})
+		}
 	}
 	c.log.Debug("kernel_deny", "pid", v.PID, "rule", rec.RuleID, "action", action, "path", v.Path)
 }

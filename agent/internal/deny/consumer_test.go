@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/feedback"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/policy"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/proctable"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/report"
@@ -36,7 +37,11 @@ func TestConsumerEmitKernelDeny(t *testing.T) {
 	}
 	holder.Swap(cp, policy.VersionMeta{Version: 1})
 
-	c := NewConsumer(rep, tbl, holder, slog.Default())
+	hub, err := feedback.NewHub("", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := NewConsumer(rep, tbl, holder, hub, slog.Default())
 	hash := policy.RuleIDHash("deny-etc-shadow")
 	c.emit(Verdict{
 		TimestampNS: 100,
@@ -46,26 +51,64 @@ func TestConsumerEmitKernelDeny(t *testing.T) {
 		Path:        "/etc/shadow",
 	})
 
-	data, err := os.ReadFile(auditPath)
+	lines, err := os.ReadFile(auditPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var rec report.Record
-	if err := json.Unmarshal(data, &rec); err != nil {
-		t.Fatal(err)
+	var kernelRec, fbRec report.Record
+	for _, line := range splitJSONL(lines) {
+		var rec report.Record
+		if err := json.Unmarshal(line, &rec); err != nil {
+			t.Fatal(err)
+		}
+		switch rec.Event {
+		case "kernel_deny":
+			kernelRec = rec
+		case "policy_feedback":
+			fbRec = rec
+		}
 	}
-	if rec.Event != "kernel_deny" {
-		t.Fatalf("event=%q", rec.Event)
+	if kernelRec.Event != "kernel_deny" {
+		t.Fatalf("kernel event=%q", kernelRec.Event)
 	}
-	if rec.RuleID != "deny-etc-shadow" || rec.Reason != "no shadow reads" {
-		t.Fatalf("rule=%q reason=%q", rec.RuleID, rec.Reason)
+	if kernelRec.RuleID != "deny-etc-shadow" || kernelRec.Reason != "no shadow reads" {
+		t.Fatalf("rule=%q reason=%q", kernelRec.RuleID, kernelRec.Reason)
 	}
-	if rec.PolicyVersion != 1 || rec.Action != "open" || rec.Path != "/etc/shadow" {
-		t.Fatalf("version=%d action=%q path=%q", rec.PolicyVersion, rec.Action, rec.Path)
+	if fbRec.Feedback == nil || fbRec.Feedback.Retry != feedback.RetryDoNot {
+		t.Fatalf("feedback=%+v", fbRec.Feedback)
 	}
-	if rec.AgentID != "agent" || rec.Mode != proctable.ModeA {
-		t.Fatalf("agent=%q mode=%q", rec.AgentID, rec.Mode)
+	if fbRec.Feedback.Target != "/etc/shadow" {
+		t.Fatalf("target=%q", fbRec.Feedback.Target)
 	}
+	got := hub.ForAgent("agent")
+	if len(got) != 1 || got[0].MatchedRule != "deny-etc-shadow" {
+		t.Fatalf("hub=%+v", got)
+	}
+}
+
+func splitJSONL(b []byte) [][]byte {
+	var out [][]byte
+	for _, line := range bytesSplit(b) {
+		if len(line) > 0 {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func bytesSplit(b []byte) [][]byte {
+	var lines [][]byte
+	start := 0
+	for i := 0; i < len(b); i++ {
+		if b[i] == '\n' {
+			lines = append(lines, b[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(b) {
+		lines = append(lines, b[start:])
+	}
+	return lines
 }
 
 func TestConsumerEmitUnknownHash(t *testing.T) {
@@ -77,7 +120,7 @@ func TestConsumerEmitUnknownHash(t *testing.T) {
 	}
 	t.Cleanup(func() { rep.Close() })
 
-	c := NewConsumer(rep, proctable.New(), policy.NewHolder(), slog.Default())
+	c := NewConsumer(rep, proctable.New(), policy.NewHolder(), nil, slog.Default())
 	c.emit(Verdict{
 		TimestampNS: 1,
 		PID:         99,

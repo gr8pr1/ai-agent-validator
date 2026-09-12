@@ -36,6 +36,11 @@ debug:
   enabled: false
   http_addr: "127.0.0.1:9230"
 
+# P4: structured denial feedback for agent runtimes (enabled with policy.mode: enforce).
+feedback:
+  path: ""              # optional JSONL sink, e.g. "./feedback.jsonl"
+  max_per_agent: 32
+
 # Policy evaluation and optional kernel enforcement (P2 shadow / P3 enforce).
 policy:
   mode: off          # off|shadow|enforce (enabled: true is deprecated alias for shadow)

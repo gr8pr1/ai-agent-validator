@@ -11,12 +11,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/feedback"
 )
 
 // Record is one reportable observation.
 type Record struct {
 	Time          time.Time `json:"time"`
-	Event         string    `json:"event"` // exec|fork|exit|connect|open|unlink|rename|shadow_deny|kernel_deny
+	Event         string    `json:"event"` // exec|fork|exit|connect|open|unlink|rename|shadow_deny|kernel_deny|policy_feedback
 	Action        string    `json:"action,omitempty"` // open|connect|... for kernel_deny
 	Enrolled      bool      `json:"enrolled,omitempty"`
 	PID           uint32    `json:"pid"`
@@ -36,6 +38,7 @@ type Record struct {
 	RuleID        string    `json:"rule_id,omitempty"`
 	PolicyVersion int       `json:"policy_version,omitempty"`
 	ShadowSource  string    `json:"shadow_source,omitempty"` // shadow|live_preview
+	Feedback      *feedback.Decision `json:"feedback,omitempty"`
 }
 
 // Reporter fans a Record out to stdout and an optional audit-log file.
@@ -98,6 +101,20 @@ func (r *Reporter) render(rec Record) string {
 	}
 	var b strings.Builder
 	switch rec.Event {
+	case "policy_feedback":
+		b.WriteString("POLICY_FEEDBACK ")
+		if rec.Feedback != nil {
+			fmt.Fprintf(&b, "pid=%d agent=%s rule=%s action=%s retry=%s",
+				rec.Feedback.PID, rec.Feedback.AgentID, rec.Feedback.MatchedRule,
+				rec.Feedback.Action, rec.Feedback.Retry)
+			if rec.Feedback.Target != "" {
+				fmt.Fprintf(&b, " target=%s", rec.Feedback.Target)
+			}
+			if rec.Feedback.Reason != "" {
+				fmt.Fprintf(&b, " reason=%q", rec.Feedback.Reason)
+			}
+		}
+		return b.String()
 	case "kernel_deny":
 		b.WriteString("KERNEL_DENY ")
 		fmt.Fprintf(&b, "pid=%d agent=%s rule=%s", rec.PID, rec.AgentID, rec.RuleID)

@@ -29,6 +29,7 @@ import (
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/ebpfloader"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/enricher"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/enroll"
+	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/feedback"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/event"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/fingerprint"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/logging"
@@ -204,6 +205,7 @@ func main() {
 	}
 
 	var denyReader *cringbuf.Reader
+	var fbHub *feedback.Hub
 	if enforcer != nil {
 		denyReader, err = enforcer.DenyReader()
 		if err != nil {
@@ -211,6 +213,16 @@ func main() {
 			os.Exit(1)
 		}
 		log.Info("kernel deny ringbuf consumer enabled")
+		fbHub, err = feedback.NewHub(cfg.Feedback.Path, cfg.Feedback.MaxPerAgent)
+		if err != nil {
+			log.Error("opening feedback sink", "path", cfg.Feedback.Path, "err", err)
+			os.Exit(1)
+		}
+		defer fbHub.Close()
+		if cfg.Feedback.Path != "" {
+			log.Info("denial feedback JSONL enabled", "path", cfg.Feedback.Path)
+		}
+		log.Info("denial feedback channel enabled")
 	}
 
 	// Build the pipeline.
@@ -273,7 +285,7 @@ func main() {
 	defer stop()
 
 	if cfg.Debug.Enabled {
-		dbg := debugsrv.New(eng, log).Start(cfg.Debug.HTTPAddr)
+		dbg := debugsrv.New(eng, fbHub, log).Start(cfg.Debug.HTTPAddr)
 		defer func() {
 			shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -295,7 +307,7 @@ func main() {
 	defer closeRingbufs()
 
 	if denyReader != nil {
-		go deny.NewConsumer(rep, tbl, polHolder, log).Run(ctx, denyReader)
+		go deny.NewConsumer(rep, tbl, polHolder, fbHub, log).Run(ctx, denyReader)
 	}
 
 	go func() {
