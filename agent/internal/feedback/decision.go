@@ -31,12 +31,16 @@ type Decision struct {
 }
 
 // NewDecision maps a kernel deny into a model-facing feedback record.
-func NewDecision(timestampNS uint64, pid uint32, action, target, agentID, ruleID, reason string, policyVersion int) Decision {
+// at is wall-clock record time (not bpf ktime); zero uses time.Now().
+func NewDecision(at time.Time, pid uint32, action, target, agentID, ruleID, reason string, policyVersion int) Decision {
+	if at.IsZero() {
+		at = time.Now()
+	}
 	if reason == "" {
 		reason = fmt.Sprintf("Action %q was blocked by host policy rule %q.", action, ruleID)
 	}
 	return Decision{
-		Time:          time.Unix(0, int64(timestampNS)),
+		Time:          at,
 		Decision:      DecisionDenied,
 		Action:        action,
 		Target:        target,

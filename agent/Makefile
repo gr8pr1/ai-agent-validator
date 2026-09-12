@@ -1,4 +1,4 @@
-.PHONY: all bpf build build-policyctl test vet clean run policy-test
+.PHONY: all bpf build build-policyctl build-shim test vet clean run policy-test
 
 CLANG       ?= $(shell which clang 2>/dev/null || echo /usr/bin/clang)
 UNAME_M     := $(shell uname -m)
@@ -10,9 +10,10 @@ BPF_ARCH_CFLAGS := -D__TARGET_ARCH_arm64
 endif
 BPF_CFLAGS  ?= -O2 -g -Wall -target bpf $(BPF_INCLUDE) $(BPF_ARCH_CFLAGS)
 BINARY      ?= aiblocker-agent
+SHIM        ?= aiblocker-shim
 POLICYCTL   ?= policyctl
 
-all: bpf build build-policyctl
+all: bpf build build-policyctl build-shim
 
 # Compile eBPF objects and stage them for go:embed.
 bpf:
@@ -28,6 +29,9 @@ build:
 build-policyctl:
 	go build -o $(POLICYCTL) ./cmd/policyctl
 
+build-shim:
+	go build -o $(SHIM) ./cmd/shim
+
 test:
 	go test ./...
 
@@ -42,6 +46,6 @@ run: all
 	sudo ./$(BINARY) --config config.yaml
 
 clean:
-	rm -f $(BINARY) $(POLICYCTL)
+	rm -f $(BINARY) $(SHIM) $(POLICYCTL)
 	rm -f bpf/enroll.bpf.o bpf/enforcer.bpf.o
 	rm -f cmd/agent/bpf/enroll.bpf.o cmd/agent/bpf/enforcer.bpf.o

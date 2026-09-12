@@ -81,7 +81,7 @@ func (c *Consumer) emit(v Verdict) {
 		c.rep.Emit(rec)
 	}
 	if c.hub != nil {
-		fd := feedback.NewDecision(v.TimestampNS, v.PID, action, v.Path, rec.AgentID, rec.RuleID, rec.Reason, rec.PolicyVersion)
+		fd := feedback.NewDecision(time.Now(), v.PID, action, v.Path, rec.AgentID, rec.RuleID, rec.Reason, rec.PolicyVersion)
 		c.hub.Record(fd)
 		if c.rep != nil {
 			c.rep.Emit(report.Record{

@@ -181,6 +181,20 @@ Each kernel deny emits a `policy_feedback` audit event with rule rationale,
 Query recent feedback via debug HTTP: `GET /debug/feedback?agent_id=agent` or
 `GET /debug/feedback?limit=20` (requires `debug.enabled: true`).
 
+### Shim integration (P4.2)
+
+Build `aiblocker-shim` (`make build-shim`) and wrap agent tool calls:
+
+```bash
+export AIBLOCKER_FEEDBACK_FILE=/tmp/aiblocker-feedback.jsonl
+aiblocker-shim curl -s https://example.com
+```
+
+On policy block, stderr includes a machine-readable line prefixed with
+`AIBLOCKER_POLICY_FEEDBACK:` (JSON decision) plus a human-readable summary.
+Point `feedback.path` at the same JSONL file, or set `AIBLOCKER_FEEDBACK_URL`
+to the debug endpoint instead.
+
 ---
 
 ## `report` — output sinks

@@ -38,7 +38,7 @@ debug:
 
 # P4: structured denial feedback for agent runtimes (enabled with policy.mode: enforce).
 feedback:
-  path: ""              # optional JSONL sink, e.g. "./feedback.jsonl"
+  path: "/tmp/aiblocker-feedback.jsonl"  # JSONL sink for aiblocker-shim
   max_per_agent: 32
 
 # Policy evaluation and optional kernel enforcement (P2 shadow / P3 enforce).

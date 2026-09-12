@@ -126,6 +126,35 @@ Enable shadow evaluation in `config.yaml` (`policy.enabled: true`, matching
 When `policy.mode: enforce`, kernel denies also emit structured `policy_feedback`
 records (stdout, audit JSONL, optional `feedback.path`). See architecture §5.6.
 
+## Policy shim (P4.2)
+
+`aiblocker-shim` wraps a subprocess and, when the command fails under enforcement,
+looks up the matching `policy_feedback` record and prints it on stderr for the
+agent runtime to inject into model context.
+
+```bash
+make build-shim
+
+# Agent config: feedback.path must match shim source (or use HTTP).
+export AIBLOCKER_FEEDBACK_FILE=/tmp/aiblocker-feedback.jsonl
+export AIBLOCKER_AGENT_ID=agent
+
+sudo systemd-run --slice=ai-agents.slice --pty bash
+# inside slice:
+aiblocker-shim cat /etc/shadow
+# stderr includes:
+#   AIBLOCKER_POLICY_FEEDBACK:{"decision":"denied",...}
+#   Policy blocked action "open" on "/etc/shadow" ...
+```
+
+Environment variables (override with flags):
+
+| Variable | Purpose |
+|----------|---------|
+| `AIBLOCKER_FEEDBACK_FILE` | JSONL path (`feedback.path` in agent config) |
+| `AIBLOCKER_FEEDBACK_URL` | e.g. `http://127.0.0.1:9230/debug/feedback` |
+| `AIBLOCKER_AGENT_ID` | filter HTTP lookup by enrolled agent |
+
 ## Tests
 
 | Script | Requires root | What it verifies |
