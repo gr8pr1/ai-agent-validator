@@ -218,6 +218,32 @@ static __always_inline int is_tagged_pid(__u32 pid)
 	return bpf_map_lookup_elem(&tagged_pids, &pid) != NULL;
 }
 
+// If an ancestor is tagged, tag pid now so fmod_ret enforcement (same syscall)
+// sees the process before userspace ringbuf handling catches up.
+static __always_inline void ensure_tagged_from_ancestor(__u32 pid)
+{
+	__u8 tagged = 1;
+	struct task_struct *task;
+	__u32 walk_pid;
+	int depth;
+
+	if (is_tagged_pid(pid))
+		return;
+	task = (struct task_struct *)bpf_get_current_task();
+	for (depth = 0; depth < 16; depth++) {
+		task = BPF_CORE_READ(task, real_parent);
+		if (!task)
+			break;
+		walk_pid = BPF_CORE_READ(task, tgid);
+		if (walk_pid == 0 || walk_pid == pid)
+			break;
+		if (is_tagged_pid(walk_pid)) {
+			bpf_map_update_elem(&tagged_pids, &pid, &tagged, BPF_ANY);
+			return;
+		}
+	}
+}
+
 static __always_inline struct enroll_event *
 init_action_header(struct enroll_buf *b, __u8 type)
 {
@@ -371,6 +397,8 @@ SEC("tracepoint/syscalls/sys_enter_connect")
 int handle_connect(struct trace_event_raw_sys_enter *ctx)
 {
 	__u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+	ensure_tagged_from_ancestor(pid);
 	if (!is_tagged_pid(pid))
 		return 0;
 
@@ -435,6 +463,8 @@ SEC("tracepoint/syscalls/sys_enter_openat")
 int handle_openat(struct trace_event_raw_sys_enter *ctx)
 {
 	__u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+	ensure_tagged_from_ancestor(pid);
 	if (!is_tagged_pid(pid))
 		return 0;
 
@@ -481,6 +511,8 @@ SEC("tracepoint/syscalls/sys_enter_unlinkat")
 int handle_unlinkat(struct trace_event_raw_sys_enter *ctx)
 {
 	__u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+	ensure_tagged_from_ancestor(pid);
 	if (!is_tagged_pid(pid))
 		return 0;
 
@@ -522,6 +554,8 @@ SEC("tracepoint/syscalls/sys_enter_renameat2")
 int handle_renameat2(struct trace_event_raw_sys_enter *ctx)
 {
 	__u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+	ensure_tagged_from_ancestor(pid);
 	if (!is_tagged_pid(pid))
 		return 0;
 

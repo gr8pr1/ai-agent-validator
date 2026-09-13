@@ -208,6 +208,7 @@ func (e *Engine) handleAction(ev *event.Event) {
 	if !ok || !p.Tagged() {
 		return
 	}
+	e.tagKernel(ev.PID)
 	if ev.StartTimeNs != 0 && p.StartNS != 0 && ev.StartTimeNs != p.StartNS {
 		return
 	}

@@ -310,6 +310,30 @@ static __always_inline int is_tagged_pid(__u32 pid)
 	return bpf_map_lookup_elem(&tagged_pids, &pid) != NULL;
 }
 
+static __always_inline void ensure_tagged_from_ancestor(__u32 pid)
+{
+	__u8 tagged = 1;
+	struct task_struct *task;
+	__u32 walk_pid;
+	int depth;
+
+	if (is_tagged_pid(pid))
+		return;
+	task = (struct task_struct *)bpf_get_current_task();
+	for (depth = 0; depth < 16; depth++) {
+		task = BPF_CORE_READ(task, real_parent);
+		if (!task)
+			break;
+		walk_pid = BPF_CORE_READ(task, tgid);
+		if (walk_pid == 0 || walk_pid == pid)
+			break;
+		if (is_tagged_pid(walk_pid)) {
+			bpf_map_update_elem(&tagged_pids, &pid, &tagged, BPF_ANY);
+			return;
+		}
+	}
+}
+
 static __always_inline int enforce_gate(void)
 {
 	struct policy_ctrl *c = policy_ctrl_get();
@@ -319,6 +343,7 @@ static __always_inline int enforce_gate(void)
 	if (!c->enforcement_active && !c->fail_closed)
 		return 0;
 	__u32 pid = bpf_get_current_pid_tgid() >> 32;
+	ensure_tagged_from_ancestor(pid);
 	if (!is_tagged_pid(pid))
 		return 0;
 	return 1;
