@@ -1,8 +1,8 @@
 # Security Policy
 
-**AI Agent Validator** (`ai-agent-validator`) is a security tool that loads eBPF programs into the kernel and is
-intended (in later phases) to make allow/deny decisions about process behavior. We
-take its correctness and safety seriously.
+**AI Agent Validator** (`ai-agent-validator`) is a security tool that loads eBPF programs into the kernel and,
+when `policy.mode: enforce`, makes allow/deny decisions about enrolled agent behavior.
+We take its correctness and safety seriously.
 
 ## Reporting a vulnerability
 
@@ -21,8 +21,9 @@ the issue and its impact, and reproduction steps or a proof of concept if availa
 - A host-root or `CAP_BPF` attacker is explicitly part of the trusted computing base
   and is **out of scope** (they can manipulate any eBPF state). See the trust and
   threat-model sections of [architecture.md](architecture.md).
-- P0 and P0.5 are observe-only: they do not block, kill, or modify any process.
-  Enforcement and its associated threat surface arrive in later phases.
+- With `policy.mode: off` or `shadow`, the agent does not block actions in the kernel.
+  **P3 enforce** (`policy.mode: enforce`) returns `-EPERM` for matching rules on
+  enrolled/tagged agents. Escalation (freeze/kill) is not yet implemented (P3+).
 
 ## Supported versions
 

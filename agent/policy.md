@@ -3,7 +3,9 @@
 Policy bundles are declarative, signed YAML documents that define allow/deny rules
 for AI-agent processes. P1 provides the schema, compiler, signing, and trusted loader
 (`policyctl`). **P2** adds userspace shadow evaluation in the observe agent (log-only).
-**Enforcement is P3** — the kernel enforcer is not wired yet.
+**P3** compiles `state: enforced` rules into kernel BPF maps when
+`policy.mode: enforce` in [config.md](config.md). **P4** surfaces structured denial
+feedback on kernel blocks.
 
 See [architecture.md](../architecture.md) §8 for design rationale and
 [policy.yaml.example](policy.yaml.example) for a starter bundle.
@@ -66,7 +68,7 @@ At least one match field besides `action` is recommended; `match.action` is alwa
 
 ### Compiler behavior
 
-- **`enforced`** rules → `live` set (future kernel enforcement).
+- **`enforced`** rules → `live` set (compiled into kernel BPF maps when `policy.mode: enforce`).
 - **`shadow`** rules → `shadow` set (P2 log-only evaluation).
 - **`draft`**, **`retired`**, **`rollback`** → skipped.
 - **Conflict resolution:** deny beats allow; higher specificity wins among same decision;
@@ -116,11 +118,10 @@ Rollback is instant: `policyctl rollback --store ./policy-store <version>`.
 | `rollback [--store DIR] <version>` | Set current version |
 | `show [--store DIR] [version]` | Print compiled policy (current if version omitted) |
 | `shadow-report [--audit PATH] [--since DURATION]` | Count `shadow_deny` hits per rule, source, and agent (P2 promotion helper) |
+| `promote [--state STATE] [--bump] <bundle.yaml> <rule-id>` | Flip a rule's `state` in-place (P5); re-sign before load |
 
 `shadow-report` defaults to `audit.jsonl`. `--since` accepts Go duration strings
 (e.g. `24h`, `168h`); groups by `rule_id`, `shadow_source`, and `agent_id`.
-
-| `promote [--state STATE] [--bump] <bundle.yaml> <rule-id>` | Flip a rule's `state` in-place (P5); re-sign before load |
 
 Curated packs live in [packs/](packs/README.md). Install with `./scripts/pack-install.sh`.
 
@@ -137,9 +138,10 @@ make policy-test
 
 | Component | Phase | Role |
 |-----------|-------|------|
-| `aiblocker-agent` | P0/P0.5/P2 | Enroll + observe; P2 adds shadow evaluation when `policy.enabled` |
-| `policyctl` | P1/P2 | Sign, compile, load policy bundles; `shadow-report` for promotion review |
-| Kernel enforcer | P3 | In-kernel deny enforcement; consumes compiled policy from maps |
+| `aiblocker-agent` | P0–P5 | Enroll + observe; P2 shadow; P3/P3.7/P4 enforce + pinned maps + feedback when `policy.mode: enforce` |
+| `policyctl` | P1/P2/P5 | Sign, compile, load policy bundles; `shadow-report`; `promote` for pack workflows |
+| Kernel enforcer | P3 | fmod_ret + cgroup deny; consumes compiled policy from BPF maps |
+| `aiblocker-shim` | P4.2 | Surfaces `policy_feedback` to agent runtimes on blocked subprocesses |
 
 ### P2 shadow workflow
 

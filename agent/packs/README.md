@@ -7,7 +7,7 @@ Ready-to-sign policy bundles for common AI-agent deployments. Start with
 
 | File | Purpose |
 |------|---------|
-| `generic-agent.yaml` | Default deny-list: cred reads, enforcer tamper, system-path writes, shadow public egress |
+| `generic-agent.yaml` | Default deny-list: cred reads, enforcer tamper, system-path write/unlink/rename, shadow public egress |
 | `carve-out.example.yaml` | Example with internal registry allow rule (copy pattern into your bundle) |
 
 ## agent_scope
@@ -60,10 +60,13 @@ Always **bump `version`**, re-sign, and `policyctl load`.
 
 ## Compiler constraints
 
-- Only one shadow `connect` deny rule at the same specificity — do not add
-  overlapping `dest_port_not_in` and `dest_ip_not_in` shadow denies without
-  merging them into a single rule.
+- Do not add overlapping `connect` deny rules at the same specificity — merge
+  predicates (e.g. `dest_ip_not_in` + `dest_port_not_in`) into one rule. The
+  compiler rejects ambiguous overlaps regardless of `state`.
 - Kernel path rules support exact paths and trailing `/*` only. The pack uses
   `/home/*/.ssh/*`; the agent expands that to `/home/USER/.ssh/*` for each home
   directory at load time (restart or policy reload after new users are created).
+- Rules with multiple verbs on the same path prefix (e.g. write+unlink+rename on
+  `/etc/*`) are merged into one kernel entry with an action bitmask — do not split
+  them into separate rules with the same prefix unless you intend different specificity.
 - Run `policyctl compile packs/your.yaml` before sign/load to catch conflicts.

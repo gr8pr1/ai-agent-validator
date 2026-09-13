@@ -133,9 +133,10 @@ an enforcement source.
 mechanism that returns a deny verdict. **D2 resolved (§9):** LSM + cgroup-BPF egress + tracepoints
 (enforce on LSM/cgroup-BPF; observe on tracepoints).
 
-> **Integration:** a **separate `enforcer` daemon** that consumes the monitor's telemetry,
-> rather than folding enforcement into the monitor binary — keeps the trusted enforcement path
-> small and auditable.
+> **Integration (v1 shipped):** enforcement lives in the **`aiblocker-agent` binary**
+> (`bpf/enforcer.bpf.c`, loaded alongside enroll programs). A separate enforcer daemon remains
+> a possible future split to shrink the trusted path further; v1 keeps loader + enforcer in one
+> root-owned process for simpler deployment.
 
 ---
 
@@ -212,10 +213,11 @@ precision (no unrelated process tagged) → ship.
 > **P0 implementation note.** v1's first milestone is a **self-contained agent** (it ports the
 > `ebpf-host-monitor` patterns rather than importing them). In P0, enrollment and fingerprint
 > matching run in **userspace** off the exec/fork/exit event stream, and the `agent_id` tag is held
-> in a userspace process table. **P0.5** adds an **advisory, observation-only** in-kernel
-> `tagged_pids` map (written by the enrollment engine, not the policy loader) to pre-filter action
-> tracepoints; the proctable remains the source of truth for attribution. The **enforcement** tag
-> map (needed to key fast LSM hooks) still arrives with P3. P0/P0.5 are observe-only.
+> in a userspace process table. **P0.5** adds an **advisory** in-kernel `tagged_pids` map
+> (written by the enrollment engine, not the policy loader) to pre-filter action tracepoints;
+> the proctable remains the source of truth for attribution. **P3** reuses the same map for
+> enforcement gating and keeps it in sync via exec/fork/exit tracepoints, ancestor propagation,
+> and a `/proc` bootstrap scan for already-running agents at startup.
 
 ### 5.2 Observation layer
 - **What:** eBPF programs + userspace enricher producing a structured event stream of tagged
@@ -228,10 +230,11 @@ precision (no unrelated process tagged) → ship.
   The monitor captures `comm` + exec filename today but not full argv — this project requires it.
 - **Action capture (P0.5):** for enrolled agents only, capture **connect** (dest IP/port via
   `sys_enter_connect`), **open** (path + flags via `sys_enter_openat`; open-for-write flags stand
-  in for write intent), **unlink** (`sys_enter_unlinkat`), and **rename** (`sys_enter_renameat2`).
-  Raw `sys_enter_write` is intentionally omitted (fd-only, no path, very high volume); true write
-  enforcement uses LSM `file_permission` in P3. Action events are gated by an advisory in-kernel
-  `tagged_pids` map; userspace re-checks every event against the proctable before reporting.
+  in for write intent), **unlink** (`sys_enter_unlinkat` and legacy `sys_enter_unlink`), and
+  **rename** (`sys_enter_renameat2`). Raw `sys_enter_write` is intentionally omitted (fd-only, no
+  path, very high volume). Action events are gated by an in-kernel `tagged_pids` map; userspace
+  re-checks every event against the proctable before reporting. For **P3 enforce**, the same
+  unlink/rename tracepoints stage paths into per-PID maps consumed by syscall `fmod_ret` hooks.
 - **Interface out:** enriched, `agent_id`-tagged event records.
 
 ### 5.3 Policy model (defined & set)
@@ -268,7 +271,13 @@ precision (no unrelated process tagged) → ship.
   **allow/deny** verdicts (and signal userspace/escalate where a pure deny is insufficient).
 - **Mechanism (D2 resolved):** **LSM + cgroup-BPF egress + tracepoints** (§9). LSM for
   file/exec/privilege (and Mode-B egress); cgroup-BPF for Mode-A egress; tracepoints for
-  observation only.
+  observation and (on the shipped agent) **syscall staging** for `fmod_ret` enforcement.
+- **Implementation (P3 shipped):** on typical hosts without `bpf` in the boot LSM stack, file
+  and network deny for tagged agents use **syscall `fmod_ret`** (`openat`, `connect`, `unlinkat`,
+  `unlink`, `renameat2` on amd64) keyed on staged paths/destinations from enroll tracepoints.
+  LSM hooks remain attached when available; inode unlink/rename LSM stubs are not the primary
+  path today. Unlink enforcement is **fail-closed** for tagged agents when no resolvable path
+  was staged (covers fd/`AT_EMPTY_PATH` bypass attempts).
 - **Actions (D3 resolved):** full set designed — syscall/file/exec deny, network egress block,
   freeze/kill/quarantine — but **v1 P3 ships deny-only** (`-EPERM`). Escalation ladder and
   terminal `decision: kill` rules are **planned** for a follow-on phase.
@@ -522,12 +531,15 @@ cgroup-BPF; observe on tracepoints (reuse `ebpf-host-monitor`).
 |---|---|---|
 | File / exec / privilege | **eBPF LSM (KRSI)** — `BPF_PROG_TYPE_LSM` | Return negative errno (e.g. `-EPERM`) from hooks (`file_open`, `bprm_check_security`, `socket_connect`, `inode_unlink`, `inode_rename`, `file_permission`, …) to deny |
 | Network egress (Mode A) | **cgroup-BPF** — `cgroup/connect4\|6` | Per-dedicated-cgroup egress deny at `connect()`; sees dest IP/port. Optional `cgroup/sock_create` for socket-*type* restrictions (no dest IP yet). |
-| Network egress (Mode B) | **LSM `socket_connect`** keyed on tagged-PID map | Per-agent egress on shared cgroups |
+| Network egress (Mode B) | **LSM `socket_connect`** when `bpf` is in the LSM stack; else **fmod_ret `connect`** keyed on tagged-PID map | Per-agent egress on shared cgroups |
 | Telemetry | **tracepoints** | Observation only — cannot block |
 | Escalation fallback *(planned)* | **`bpf_send_signal()`** / userspace kill / cgroup freeze | Kill/quarantine when deny is insufficient; freeze is a **userspace** `cgroup.freeze` write (Mode A only) |
 
-**Kernel requirements:** kernel ≥ 5.7, `CONFIG_BPF_LSM`, boot param `lsm=...,bpf`, cgroup v2
-(for Mode-A egress and planned freeze).
+**Kernel requirements:** Linux 5.8+ with BTF; cgroup v2 for Mode-A egress and planned freeze.
+Full LSM enforcement path needs `CONFIG_BPF_LSM` and boot param `lsm=...,bpf`. **Typical P3
+deployments** without `lsm=...,bpf` use **cgroup-BPF egress** (Mode A) and **syscall fmod_ret**
+(amd64) for tagged-agent open/connect/unlink/rename; enforce mode on non-amd64 without LSM bpf
+requires the full LSM stack.
 
 > **Egress differs by enrollment mode:** cgroup-BPF egress applies only to a **dedicated
 > (Mode-A) cgroup**. For a shared **Mode-B** agent, egress denial rides the **LSM
@@ -536,6 +548,12 @@ cgroup-BPF; observe on tracepoints (reuse `ebpf-host-monitor`).
 **Alternatives not chosen:** seccomp-bpf (syscall-number granularity; poor path/IP matching;
 spawn-time install); observe-and-kill via tracepoints alone (racy — containment, not prevention);
 LSM-only without cgroup-BPF (works, but cgroup-BPF is cleaner for Mode-A egress).
+
+> **Shipped agent note (P3).** Where `lsm=...,bpf` is not present at boot, the enforcer relies
+> on **cgroup-BPF** for Mode-A egress and **syscall `fmod_ret`** for tagged-agent open/connect/
+> unlink/rename. Policy path rules with multiple verbs on the same prefix (e.g. write+unlink+
+> rename on `/etc/*`) are merged into a single kernel map entry with an **action bitmask** at
+> load time. See [agent/config.md](agent/config.md) and [agent/README.md](agent/README.md).
 
 Hot-path rules regardless of mechanism:
 - Verdicts come **only** from pre-loaded maps written by the trusted loader (§5.4).
@@ -572,9 +590,10 @@ What makes "block AI actions on my server" defensible:
      actions are allowed (lose protection, keep availability).
    - *Fail-closed:* deny enrolled-agent actions on uncertainty (lose availability, keep
      containment). Pair with `default_action: deny` and careful carve-outs.
-   - **Implementation:** an `enforcement_active` flag in pinned BPF maps; **LSM hooks and
-     cgroup-BPF programs** for tagged agents apply the scope's `fail_direction` when the flag is
-     clear or maps are missing. Untagged host processes are never affected.
+   - **Implementation:** an `enforcement_active` flag in pinned BPF maps; **LSM hooks,
+     cgroup-BPF programs, and syscall fmod_ret hooks** for tagged agents apply the scope's
+     `fail_direction` when the flag is clear or maps are missing. Untagged host processes are
+     never affected.
 5. **Blast-radius limits.** Enforcement is scoped to the agent's cgroup/tag, not the whole host,
    so a bad rule can't brick unrelated services.
 6. **Tamper-evidence.** Policy store and audit log are integrity-protected; map writes are
@@ -624,10 +643,11 @@ policy plumbing are solid.
 | **P0.5 — Action capture** *(implemented)* | Per-agent connect/open/unlink/rename action stream; advisory in-kernel tag map for pre-filter | P0 agent | action tracepoints (§5.2), integration tests. Config: [agent/config.md](agent/config.md) |
 | **P1 — Policy model + loader** *(implemented)* | Policy schema (§8); signed bundle; trusted loader (`policyctl`); compile to map-ready artifact; file-backed version history + rollback | SQLite pattern (file-backed in v1) | policy compiler/loader (§5.4). Docs: [agent/policy.md](agent/policy.md) |
 | **P2 — Shadow mode** *(implemented)* | Load rules log-only; "would have blocked" reporting against live traffic | OTLP audit (audit JSONL in v1) | shadow evaluation in userspace agent, `policyctl shadow-report`, policy lifecycle (§7) |
-| **P3 — Enforce** | LSM + cgroup-BPF (§9); **deny-only** (`-EPERM`) for file/exec/network/privilege | — | enforcer (§5.5) |
-| **P4 — Denial feedback** | Structured do-not-retry + reason surfaced into the model's context; shim/runtime integration | — | feedback channel (§5.6) — *the differentiator* |
+| **P3 — Enforce** *(implemented)* | fmod_ret + cgroup-BPF (§9); **deny-only** (`-EPERM`) for open/connect/unlink/rename + Mode-A egress | — | enforcer (§5.5), `enforce-test.sh`. Config: [agent/config.md](agent/config.md) |
+| **P3.7 — Pinned maps** *(implemented)* | Policy BPF maps persist under bpffs across agent restarts | P3 enforcer | `bpf.pin_path`, map reuse on startup |
+| **P4 — Denial feedback** *(implemented)* | Structured do-not-retry + reason surfaced into the model's context; shim/runtime integration | P3 enforcer | feedback channel (§5.6), `aiblocker-shim` |
 | **P3+ — Escalation** *(planned)* | Repeat-denial → freeze (Mode A) / kill (Mode B); terminal `decision: kill` rules; quarantine | — | escalation ladder (§5.5) |
-| **P5 — Curated packs + ops** | A generic agent deny-list pack; carve-out config; full audit/observability | monitor OTel/MITRE | policy packs, ops tooling |
+| **P5 — Curated packs + ops** *(implemented)* | Generic agent deny-list pack; carve-out examples; promote/sign/load scripts | monitor OTel/MITRE | [agent/packs/](agent/packs/README.md), `policyctl promote` |
 
 Curated deny rules (P5) can be seeded early from the monitor's MITRE mapping. **No learning
 phase is required to ship enforcement.**
@@ -703,7 +723,7 @@ packs, management/gate UI, and — eventually — the allow-list-generation assi
 
 ---
 
-*Status: design decisions D1–D3, D5–D6 resolved (§12); D4 deferred to §14. v1 = policy-strict
-enforcement (deny-only in P3) + model-comprehensible denial feedback. Single-host deployment;
-fleet-ready bundle contract. Builds on `ebpf-host-monitor` for observation; learning/AI authoring
-are explicitly future (§14).*
+*Status: design decisions D1–D3, D5–D6 resolved (§12); D4 deferred to §14. **P0–P5 +
+P3.7 implemented** (observe → shadow → enforce → feedback → curated packs). P3+ escalation
+remains planned. Single-host deployment; fleet-ready bundle contract. Builds on
+`ebpf-host-monitor` for observation; learning/AI authoring are explicitly future (§14).*

@@ -75,7 +75,7 @@ syscalls for enrolled processes. Does not block anything.
 |-------|----------------|--------------|
 | `connect` | `sys_enter_connect` | `dest`, `dest_port` |
 | `open` | `sys_enter_openat` | `path`, `write` |
-| `unlink` | `sys_enter_unlinkat` | `path` |
+| `unlink` | `sys_enter_unlinkat`, `sys_enter_unlink` | `path` |
 | `rename` | `sys_enter_renameat2` | `path`, `new_path` |
 
 **Open / write intent:** P0.5 does not hook raw `write()`. When `open_writes_only:
@@ -118,11 +118,24 @@ re-checks every event against the process table before reporting.
 | `shadow` | not loaded | yes (`shadow_deny`) | no |
 | `enforce` | yes (`state: enforced` rules) | yes | yes (`-EPERM`, `kernel_deny`) |
 
-**Enforce hooks:** tagged agents — syscall fmod_ret (`openat`, `connect`, `unlinkat`, `unlink`, `renameat2` on amd64).
-Mode A cgroup (`mode_a.cgroup_contains`) — cgroup/connect4+6 for all processes in
-the slice (egress). LSM `socket_connect` attaches only when `bpf` is in the kernel
-LSM stack (`lsm=...,bpf` at boot); otherwise fmod_ret is the connect path for
-tagged processes.
+**Enforce hooks:** tagged agents — syscall fmod_ret (`openat`, `connect`, `unlinkat`,
+`unlink`, `renameat2` on amd64). Enroll tracepoints stage paths/destinations into
+per-PID maps before the syscall runs. Mode A cgroup (`mode_a.cgroup_contains`) —
+cgroup/connect4+6 for all processes in the slice (egress). LSM `socket_connect`
+attaches only when `bpf` is in the kernel LSM stack (`lsm=...,bpf` at boot);
+otherwise fmod_ret is the connect path for tagged processes.
+
+**Kernel tag sync:** the in-kernel `tagged_pids` map is updated on exec/fork/exit,
+propagates from tagged ancestors, and is bootstrapped from `/proc` at agent startup
+for already-running enrolled processes.
+
+**Unlink/rename fail-closed:** when a tagged agent reaches an unlink or rename `fmod_ret`
+hook without resolvable staged paths (e.g. fd-based `unlinkat` with `AT_EMPTY_PATH`), the
+enforcer returns `-EPERM` rather than allowing the operation.
+
+**Multi-action path rules:** rules that share the same path prefix but different verbs
+(e.g. write+unlink+rename on `/etc/*`) are merged into one kernel map entry with an
+action bitmask at load time.
 
 **Cgroup connect return codes:** `1` = allow, `0` = deny (unlike fmod_ret `-EPERM`).
 
@@ -213,7 +226,7 @@ to the debug endpoint instead.
 | **stdout** | Tagged lifecycle + action + `shadow_deny` events (`text` or `json`; shadow prefix `SHADOW_DENY`) |
 | **stderr (slog)** | Startup, snapshots, warnings; with `--debug`, fingerprint traces |
 | **`log_file`** | Duplicate of slog when set |
-| **`audit_log`** | Tagged events only: `exec`, `fork`, `exit`, `connect`, `open`, `unlink`, `rename`, `shadow_deny`, plus `session_start` marker |
+| **`audit_log`** | Tagged events only: `exec`, `fork`, `exit`, `connect`, `open`, `unlink`, `rename`, `shadow_deny`, `kernel_deny`, `policy_feedback`, plus `session_start` marker |
 
 Enrollment decisions on stdout are prefixed `ENROLL` in text mode.
 
@@ -274,6 +287,7 @@ when `debug.enabled: true` in YAML.
 | `/debug/agents` | Live tagged process trees |
 | `/debug/fingerprints` | Loaded fingerprint set |
 | `/debug/stats` | Event/enrollment/action counters |
+| `/debug/feedback` | Recent `policy_feedback` records (`?agent_id=`, `?limit=`) |
 | `/healthz` | Liveness |
 
 ---

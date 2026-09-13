@@ -29,6 +29,13 @@ Policy loader tests need no root:
 
 ```bash
 ./scripts/policy-test.sh
+./scripts/pack-test.sh
+```
+
+Enforce-mode integration (P3) requires root:
+
+```bash
+sudo ./scripts/enforce-test.sh
 ```
 
 ## Contributing a fingerprint (Mode B)

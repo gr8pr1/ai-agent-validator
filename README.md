@@ -4,8 +4,8 @@ Policy-strict, kernel-enforced guardrails for AI agents on Linux (`ai-agent-vali
 
 AI coding agents now run real commands on real machines. **AI Agent Validator** watches
 those agents from the kernel, attributes every action to the agent that caused it,
-and (in later phases) blocks actions that violate a deterministic, human-authored
-policy — returning a model-comprehensible "do not retry" signal.
+and blocks actions that violate a deterministic, human-authored policy when
+`policy.mode: enforce` — returning a model-comprehensible "do not retry" signal.
 
 The design follows a two-plane model: a **slow control plane** where humans author
 and version policy, and a **fast data plane** where the kernel enforces it
@@ -50,7 +50,10 @@ summarize hits before promoting rules. See [agent/config.md](agent/config.md) an
 
 ### P3 — enforce
 
-Kernel deny via fmod_ret + Mode A cgroup egress. See [agent/README.md](agent/README.md).
+Kernel deny via syscall `fmod_ret` (open/connect/unlink/rename on amd64) + Mode A
+cgroup egress. Policy maps can persist under bpffs across restarts (P3.7). Kernel
+tags sync to descendants and already-running agents at startup. See
+[agent/README.md](agent/README.md) and [agent/config.md](agent/config.md).
 
 ### P4 — denial feedback
 
@@ -83,6 +86,7 @@ make policy-test
 ```
 
 See [agent/README.md](agent/README.md) for build details, tests, and debug endpoints.
+See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
 ## Repository layout
 

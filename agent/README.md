@@ -8,12 +8,15 @@ kernel** when `policy.mode: enforce`.
 Current milestones: **P0** (enroll & observe), **P0.5** (action capture),
 **P1** (policy schema + trusted loader via `policyctl`), **P2** (shadow-mode
 evaluation in userspace), **P3** (kernel deny via fmod_ret + Mode A cgroup
-egress), and **P4** (denial feedback channel). See [architecture.md](../architecture.md) §13.
+egress), **P3.7** (pinned policy maps), **P4** (denial feedback channel), and
+**P5** (curated policy packs). See [architecture.md](../architecture.md) §13.
 
 ## Build
 
 Requirements: Linux 5.8+ with BTF, `clang`/LLVM, libbpf headers
-(`/usr/include/bpf`), and Go 1.24+.
+(`/usr/include/bpf`), and Go 1.24+. **Enforce mode** on amd64 uses syscall fmod_ret;
+without `lsm=...,bpf` at boot, non-amd64 hosts need the full BPF LSM stack for kernel
+deny (the agent exits if no enforce hooks attach).
 
 ```bash
 make                 # bpf + aiblocker-agent + policyctl
@@ -43,11 +46,15 @@ sudo ./aiblocker-agent --config config.yaml
 Set `policy.mode: enforce` in `config.yaml`, load a signed bundle with `policyctl
 load`, then start the agent. Mode A processes in `mode_a.cgroup_contains` (e.g.
 `ai-agents.slice`) get egress enforcement via cgroup/connect; tagged agents also
-get open/connect enforcement via syscall fmod_ret hooks.
+get open/connect/unlink/rename enforcement via syscall `fmod_ret` hooks (amd64).
+Enroll tracepoints stage paths and connect destinations into per-PID maps; unlink
+is fail-closed when no resolvable path was staged (fd/`AT_EMPTY_PATH` attempts).
 
 Policy maps persist under `bpf.pin_path` (default `/sys/fs/bpf/ai-agent-validator`)
-across agent restarts (P3.7). Ensure the AI cgroup slice exists before starting
-the agent in Mode A (`systemd-run --slice=ai-agents.slice sleep infinity`).
+across agent restarts (P3.7). At startup the agent bootstraps kernel tags for
+already-running enrolled processes (`/proc` scan). Ensure the AI cgroup slice
+exists before starting the agent in Mode A
+(`systemd-run --slice=ai-agents.slice sleep infinity`).
 
 AI agent shell (Mode A):
 
@@ -111,7 +118,8 @@ Enable shadow evaluation in `config.yaml` (`policy.enabled: true`, matching
   fingerprint match trace. Set `log_file` to duplicate slog to a file.
 - **audit log** — append-only JSONL when `report.audit_log` is set. Tagged
   lifecycle events (`exec`, `fork`, `exit`), action events (`connect`, `open`,
-  `unlink`, `rename`), and P2 `shadow_deny` verdicts. Does not include debug traces.
+  `unlink`, `rename`), P2 `shadow_deny` verdicts, P3 `kernel_deny`, and P4
+  `policy_feedback`. Does not include debug traces.
 - **snapshot** — periodic per-agent counters in the logs (`report.snapshot_sec`).
 
 ## Debug mode
@@ -165,7 +173,7 @@ Environment variables (override with flags):
 |--------|---------------|------------------|
 | `./scripts/policy-test.sh` | no | P1: sign, load, rollback |
 | `./scripts/integration-test.sh` | yes | P0/P0.5: enroll + action capture |
-| `./scripts/enforce-test.sh` | yes | P3: localhost allow + egress/file deny |
+| `./scripts/enforce-test.sh` | yes | P3: localhost allow + egress/file/unlink deny (+ python `os.remove`) |
 | `./scripts/pack-test.sh` | no | P5: compile curated policy packs |
 | `./scripts/pack-install.sh` | no | P5: sign + load a pack (needs policy.key) |
 | `go test ./internal/enroll/...` | no | P2 shadow evaluation (engine_shadow_test.go) |
@@ -180,11 +188,12 @@ sudo ./scripts/integration-test.sh
 
 | Package / file | Responsibility |
 |----------------|----------------|
-| `bpf/enroll.bpf.c` | lifecycle tracepoints + action syscalls; advisory tag map |
+| `bpf/enroll.bpf.c` | lifecycle + action tracepoints; tag map; pending path staging |
+| `bpf/enforcer.bpf.c` | fmod_ret + cgroup enforce hooks; policy map lookups |
 | `cmd/policyctl` | P1 trusted policy loader CLI; P2 `shadow-report`; P5 `promote` |
 | `packs/` | P5 curated policy packs + carve-out examples |
 | `internal/policy` | schema, compiler, signing, store, loader, evaluator, holder, shadow-report |
-| `internal/ebpfloader` | load object, attach 7 tracepoints, ringbuf, tag map |
+| `internal/ebpfloader` | load objects, attach 8 tracepoints + fmod_ret/cgroup, ringbuf |
 | `internal/event` | decode ringbuf records (lifecycle + action layouts) |
 | `internal/enricher` | resolve binary / user / cgroup path from `/proc` |
 | `internal/fingerprint` | Mode B fingerprint schema, load, match (+ trace) |
