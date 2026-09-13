@@ -46,6 +46,9 @@ func PromoteRule(path, ruleID string, opts PromoteRuleOptions) error {
 	if opts.BumpVersion {
 		b.Version++
 	}
+	if _, err := Compile(b); err != nil {
+		return fmt.Errorf("promoted bundle does not compile: %w", err)
+	}
 	out, err := yaml.Marshal(&Document{PolicyBundle: *b})
 	if err != nil {
 		return err

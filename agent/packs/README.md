@@ -10,6 +10,13 @@ Ready-to-sign policy bundles for common AI-agent deployments. Start with
 | `generic-agent.yaml` | Default deny-list: cred reads, enforcer tamper, system-path writes, shadow public egress |
 | `carve-out.example.yaml` | Example with internal registry allow rule (copy pattern into your bundle) |
 
+## agent_scope
+
+`policy_bundle.agent_scope` must **exactly match** the enrolled `agent_id`
+(Mode A `default_agent_id`, fingerprint tag, or `policy.scope` override in
+`config.yaml`). The default pack uses `"agent"` — change it if your agents
+enroll as `claude-code`, `agent:ci-runner`, etc.
+
 ## Quick install
 
 From `agent/`:

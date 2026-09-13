@@ -7,6 +7,8 @@
 
 policy_bundle:
   version: 1
+  # Must match enrolled agent_id (Mode A default_agent_id or fingerprint tag).
+  # Override here or set policy.scope in config.yaml.
   agent_scope: "agent"
   signed_by: "curated-pack/generic-agent"
   default_action: allow
@@ -22,8 +24,8 @@ policy_bundle:
 
     - id: shadow-public-egress
       rationale: >
-        Log outbound connections to public IPs before enforcing. Promote to
-        enforced after a clean shadow window (policyctl shadow-report).
+        Log outbound connections to public IPv4 before enforcing. IPv6 egress
+        is not matched by this rule (v1). Promote after a clean shadow window.
       match:
         action: connect
         dest_ip_not_in:
@@ -49,7 +51,7 @@ policy_bundle:
     - id: deny-disable-enforcer
       rationale: "Agents must not tamper with the validator agent or pinned BPF maps."
       match:
-        action: open|write|unlink
+        action: open|write|unlink|rename
         path_in:
           - "/etc/ai-agent-validator/*"
           - "/sys/fs/bpf/ai-agent-validator/*"
@@ -69,5 +71,6 @@ policy_bundle:
           - "/bin/*"
           - "/sbin/*"
           - "/lib/*"
+          - "/lib64/*"
       decision: deny
       state: enforced

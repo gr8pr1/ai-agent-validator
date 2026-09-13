@@ -55,7 +55,7 @@ policy_bundle:
     - id: deny-disable-enforcer
       rationale: "Agents must not tamper with the validator or pinned BPF maps."
       match:
-        action: open|write|unlink
+        action: open|write|unlink|rename
         path_in:
           - "/etc/ai-agent-validator/*"
           - "/sys/fs/bpf/ai-agent-validator/*"
@@ -73,5 +73,6 @@ policy_bundle:
           - "/bin/*"
           - "/sbin/*"
           - "/lib/*"
+          - "/lib64/*"
       decision: deny
       state: enforced
