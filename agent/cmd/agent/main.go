@@ -140,14 +140,38 @@ func main() {
 			log.Error("enroll pending_connect_cpu map missing; cannot wire kernel enforcement")
 			os.Exit(1)
 		}
+		pendingUnlinkMap := loader.PendingUnlinkPathsMap()
+		if pendingUnlinkMap == nil {
+			log.Error("enroll pending_unlink_paths map missing; cannot wire kernel enforcement")
+			os.Exit(1)
+		}
+		pendingUnlinkCPUMap := loader.PendingUnlinkCPUMap()
+		if pendingUnlinkCPUMap == nil {
+			log.Error("enroll pending_unlink_cpu map missing; cannot wire kernel enforcement")
+			os.Exit(1)
+		}
+		pendingRenameMap := loader.PendingRenamePathsMap()
+		if pendingRenameMap == nil {
+			log.Error("enroll pending_rename_paths map missing; cannot wire kernel enforcement")
+			os.Exit(1)
+		}
+		pendingRenameCPUMap := loader.PendingRenameCPUMap()
+		if pendingRenameCPUMap == nil {
+			log.Error("enroll pending_rename_cpu map missing; cannot wire kernel enforcement")
+			os.Exit(1)
+		}
 		pinPath := cfg.BPF.PinPath
 		enforcer, err = ebpfloader.LoadEnforcer(enforcerObject, ebpfloader.EnforcerLoadOptions{
 			MapReplacements: map[string]*ebpf.Map{
-				"tagged_pids":         tagMap,
-				"pending_open_paths":  pendingOpenMap,
-				"pending_connects":    pendingConnectMap,
-				"pending_open_cpu":    pendingOpenCPUMap,
-				"pending_connect_cpu": pendingConnectCPUMap,
+				"tagged_pids":          tagMap,
+				"pending_open_paths":   pendingOpenMap,
+				"pending_connects":     pendingConnectMap,
+				"pending_open_cpu":     pendingOpenCPUMap,
+				"pending_connect_cpu":  pendingConnectCPUMap,
+				"pending_unlink_paths": pendingUnlinkMap,
+				"pending_unlink_cpu":   pendingUnlinkCPUMap,
+				"pending_rename_paths": pendingRenameMap,
+				"pending_rename_cpu":   pendingRenameCPUMap,
 			},
 			PinPath: pinPath,
 		})
@@ -519,6 +543,10 @@ func enforceSnapshotFields(enforcer *ebpfloader.EnforcerLoader) []any {
 		"enforce_connect_fmod", est.ConnectFmod,
 		"enforce_connect_deny", est.ConnectDeny,
 		"enforce_cgroup_connect", est.CgroupConnect,
+		"enforce_unlinkat_fmod", est.UnlinkatFmod,
+		"enforce_unlinkat_deny", est.UnlinkatDeny,
+		"enforce_renameat_fmod", est.RenameatFmod,
+		"enforce_renameat_deny", est.RenameatDeny,
 	}
 }
 

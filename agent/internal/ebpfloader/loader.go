@@ -119,6 +119,38 @@ func (l *Loader) PendingConnectCPUMap() *ebpf.Map {
 	return l.coll.Maps["pending_connect_cpu"]
 }
 
+// PendingUnlinkPathsMap returns the unlinkat staging map (shared with enforcer when loaded).
+func (l *Loader) PendingUnlinkPathsMap() *ebpf.Map {
+	if l.coll == nil {
+		return nil
+	}
+	return l.coll.Maps["pending_unlink_paths"]
+}
+
+// PendingUnlinkCPUMap returns the per-CPU unlinkat staging map for fmod_ret hooks.
+func (l *Loader) PendingUnlinkCPUMap() *ebpf.Map {
+	if l.coll == nil {
+		return nil
+	}
+	return l.coll.Maps["pending_unlink_cpu"]
+}
+
+// PendingRenamePathsMap returns the renameat2 staging map (shared with enforcer when loaded).
+func (l *Loader) PendingRenamePathsMap() *ebpf.Map {
+	if l.coll == nil {
+		return nil
+	}
+	return l.coll.Maps["pending_rename_paths"]
+}
+
+// PendingRenameCPUMap returns the per-CPU renameat2 staging map for fmod_ret hooks.
+func (l *Loader) PendingRenameCPUMap() *ebpf.Map {
+	if l.coll == nil {
+		return nil
+	}
+	return l.coll.Maps["pending_rename_cpu"]
+}
+
 // TagPID marks pid in the advisory kernel tag map.
 func (l *Loader) TagPID(pid uint32) error {
 	m, ok := l.coll.Maps["tagged_pids"]

@@ -50,6 +50,13 @@ policy_bundle:
         path_in: ["/etc/shadow"]
       decision: deny
       state: enforced
+    - id: deny-etc-unlink
+      rationale: "no etc deletes"
+      match:
+        action: unlink
+        path_in: ["/etc/*"]
+      decision: deny
+      state: enforced
 EOF
 
 ./policyctl keygen --key "$TMP/policy.key" --pub "$TMP/policy.pub"
@@ -66,7 +73,7 @@ mode_b:
   enabled: false
 actions:
   enabled: true
-  capture: [connect, open]
+  capture: [connect, open, unlink]
 policy:
   mode: enforce
   store_path: "$TMP/policy-store"
@@ -110,6 +117,18 @@ if run_in_slice 'cat /etc/shadow' 2>/dev/null; then
   exit 1
 else
   echo "OK /etc/shadow blocked"
+fi
+
+echo "== /etc unlink (expect block) =="
+TEST_FILE="/etc/aiblocker-enforce-test-$$"
+run_in_slice "touch '$TEST_FILE'"
+if run_in_slice "rm '$TEST_FILE'" 2>/dev/null; then
+  echo "FAIL /etc unlink allowed" >&2
+  rm -f "$TEST_FILE"
+  exit 1
+else
+  echo "OK /etc unlink blocked"
+  rm -f "$TEST_FILE"
 fi
 
 echo "== all enforce checks passed =="

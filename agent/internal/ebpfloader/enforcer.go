@@ -25,7 +25,7 @@ var lsmPrograms = []lsmProgram{
 }
 
 // enforceStatCount must match STAT_ENFORCE_MAX in enforcer.bpf.c.
-const enforceStatCount = 7
+const enforceStatCount = 11
 
 const (
 	enforceStatFileOpen = iota
@@ -35,12 +35,18 @@ const (
 	enforceStatConnectFmod
 	enforceStatConnectDeny
 	enforceStatCgroupConnect
+	enforceStatUnlinkatFmod
+	enforceStatUnlinkatDeny
+	enforceStatRenameatFmod
+	enforceStatRenameatDeny
 )
 
 // syscallPrograms are optional fmod_ret hooks (x86_64 only in the BPF object).
 var syscallPrograms = []string{
 	"enforce_openat_entry",
 	"enforce_connect_entry",
+	"enforce_unlinkat_entry",
+	"enforce_renameat2_entry",
 }
 
 type cgroupProgram struct {
@@ -59,9 +65,13 @@ type EnforceStats struct {
 	GatePass       uint64
 	OpenatFmod     uint64
 	OpenatDeny     uint64
-	ConnectFmod      uint64
-	ConnectDeny      uint64
-	CgroupConnect    uint64
+	ConnectFmod    uint64
+	ConnectDeny    uint64
+	CgroupConnect  uint64
+	UnlinkatFmod   uint64
+	UnlinkatDeny   uint64
+	RenameatFmod   uint64
+	RenameatDeny   uint64
 }
 
 // PolicyCtrl is the userspace view of the policy_ctrl BPF map value.
@@ -364,6 +374,22 @@ func (l *EnforcerLoader) EnforceStats() (EnforceStats, error) {
 	if err != nil {
 		return EnforceStats{}, err
 	}
+	unlinkatFmod, err := sum(enforceStatUnlinkatFmod)
+	if err != nil {
+		return EnforceStats{}, err
+	}
+	unlinkatDeny, err := sum(enforceStatUnlinkatDeny)
+	if err != nil {
+		return EnforceStats{}, err
+	}
+	renameatFmod, err := sum(enforceStatRenameatFmod)
+	if err != nil {
+		return EnforceStats{}, err
+	}
+	renameatDeny, err := sum(enforceStatRenameatDeny)
+	if err != nil {
+		return EnforceStats{}, err
+	}
 	return EnforceStats{
 		FileOpenCalls: fileOpen,
 		GatePass:      gatePass,
@@ -372,6 +398,10 @@ func (l *EnforcerLoader) EnforceStats() (EnforceStats, error) {
 		ConnectFmod:   connectFmod,
 		ConnectDeny:   connectDeny,
 		CgroupConnect: cgroupConnect,
+		UnlinkatFmod:  unlinkatFmod,
+		UnlinkatDeny:  unlinkatDeny,
+		RenameatFmod:  renameatFmod,
+		RenameatDeny:  renameatDeny,
 	}, nil
 }
 

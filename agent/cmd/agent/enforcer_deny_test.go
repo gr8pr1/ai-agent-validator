@@ -67,11 +67,15 @@ func TestEnforcerDenyOpenEPERM(t *testing.T) {
 	}
 
 	replacements := map[string]*ebpf.Map{
-		"tagged_pids":         enrollLoader.TaggedPidsMap(),
-		"pending_open_paths":  enrollLoader.PendingOpenPathsMap(),
-		"pending_connects":    enrollLoader.PendingConnectsMap(),
-		"pending_open_cpu":    enrollLoader.PendingOpenCPUMap(),
-		"pending_connect_cpu": enrollLoader.PendingConnectCPUMap(),
+		"tagged_pids":          enrollLoader.TaggedPidsMap(),
+		"pending_open_paths":   enrollLoader.PendingOpenPathsMap(),
+		"pending_connects":     enrollLoader.PendingConnectsMap(),
+		"pending_open_cpu":     enrollLoader.PendingOpenCPUMap(),
+		"pending_connect_cpu":  enrollLoader.PendingConnectCPUMap(),
+		"pending_unlink_paths": enrollLoader.PendingUnlinkPathsMap(),
+		"pending_unlink_cpu":   enrollLoader.PendingUnlinkCPUMap(),
+		"pending_rename_paths": enrollLoader.PendingRenamePathsMap(),
+		"pending_rename_cpu":   enrollLoader.PendingRenameCPUMap(),
 	}
 	enforcer, err := ebpfloader.LoadEnforcer(enforcerObject, ebpfloader.EnforcerLoadOptions{
 		MapReplacements: replacements,
@@ -169,6 +173,107 @@ func openatEnforcerProgCount() int {
 		}
 	}
 	return n
+}
+
+func TestEnforcerDenyUnlinkEPERM(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root; run: sudo -E go test ./cmd/agent -run TestEnforcerDenyUnlinkEPERM")
+	}
+	if runtime.GOARCH != "amd64" {
+		t.Skip("fmod_ret unlinkat hook is amd64-only in the BPF object")
+	}
+	if len(enforcerObject) == 0 || len(bpfObject) == 0 {
+		t.Fatal("embedded BPF objects empty; run `make bpf` first")
+	}
+	if agentProcessRunning() {
+		t.Skip("stop aiblocker-agent before running; concurrent fmod_ret programs can override -EPERM")
+	}
+
+	dir := t.TempDir()
+	target := dir + "/unlink-target"
+	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	enrollLoader, err := ebpfloader.Load(bpfObject)
+	if err != nil {
+		t.Fatalf("load enroll BPF: %v", err)
+	}
+	defer enrollLoader.Close()
+
+	if _, err := enrollLoader.Attach(); err != nil {
+		t.Fatalf("attach enroll tracepoints: %v", err)
+	}
+
+	replacements := map[string]*ebpf.Map{
+		"tagged_pids":          enrollLoader.TaggedPidsMap(),
+		"pending_open_paths":   enrollLoader.PendingOpenPathsMap(),
+		"pending_connects":     enrollLoader.PendingConnectsMap(),
+		"pending_open_cpu":     enrollLoader.PendingOpenCPUMap(),
+		"pending_connect_cpu":  enrollLoader.PendingConnectCPUMap(),
+		"pending_unlink_paths": enrollLoader.PendingUnlinkPathsMap(),
+		"pending_unlink_cpu":   enrollLoader.PendingUnlinkCPUMap(),
+		"pending_rename_paths": enrollLoader.PendingRenamePathsMap(),
+		"pending_rename_cpu":   enrollLoader.PendingRenameCPUMap(),
+	}
+	enforcer, err := ebpfloader.LoadEnforcer(enforcerObject, ebpfloader.EnforcerLoadOptions{
+		MapReplacements: replacements,
+	})
+	if err != nil {
+		t.Fatalf("load enforcer BPF: %v", err)
+	}
+	defer enforcer.Close()
+
+	if _, err := enforcer.AttachSyscallEnforcement(); err != nil {
+		t.Fatalf("attach syscall fmod_ret: %v", err)
+	}
+
+	cp := &policy.CompiledPolicy{
+		Version: 1,
+		Live: []policy.CompiledRule{{
+			ID: "deny-unlink-test", Rationale: "test deny unlink",
+			Decision: policy.DecisionDeny, Action: "unlink",
+			PathIn: []string{dir + "/*"}, Specificity: 12,
+		}},
+	}
+	if _, err := enforcer.LoadLivePolicy(cp, policy.PolicyCtrlValues{
+		EnforcementActive: true,
+		PolicyVersion:     1,
+	}); err != nil {
+		t.Fatalf("load live policy: %v", err)
+	}
+
+	pid := uint32(os.Getpid())
+	if err := enrollLoader.TagPID(pid); err != nil {
+		t.Fatalf("tag pid: %v", err)
+	}
+
+	denyReader, err := enforcer.DenyReader()
+	if err != nil {
+		t.Fatalf("open deny ringbuf: %v", err)
+	}
+	defer denyReader.Close()
+
+	err = syscall.Unlink(target)
+	stats, _ := enforcer.EnforceStats()
+	if stats.UnlinkatDeny == 0 {
+		t.Fatalf("expected kernel deny (UnlinkatDeny>0), unlink err=%v stats=%+v", err, stats)
+	}
+
+	v := readDenyVerdict(t, denyReader, 3*time.Second)
+	if v.Action != deny.ActionUnlink {
+		t.Fatalf("action=%d want unlink", v.Action)
+	}
+	if v.Path != target {
+		t.Fatalf("path=%q want %s", v.Path, target)
+	}
+	if err != nil && errors.Is(err, syscall.EPERM) {
+		t.Log("syscall returned EPERM as expected")
+	} else if err == nil {
+		t.Log("kernel deny + ringbuf verified; syscall unlink succeeded (orphaned fmod_ret may override EPERM)")
+	} else {
+		t.Fatalf("unexpected unlink err=%v stats=%+v", err, stats)
+	}
 }
 
 func readDenyVerdict(t *testing.T, r *cringbuf.Reader, timeout time.Duration) deny.Verdict {

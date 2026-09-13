@@ -85,6 +85,13 @@ struct pending_connect {
 	__u8 ip[16];
 };
 
+struct pending_rename {
+	__u16 old_len;
+	__u16 new_len;
+	char old_path[MAX_PATH];
+	char new_path[MAX_PATH];
+};
+
 struct inode_key {
 	__u64 ino;
 	__u32 dev;
@@ -146,6 +153,34 @@ struct {
 	__type(key, __u32);
 	__type(value, struct pending_connect);
 } pending_connect_cpu SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 4096);
+	__type(key, __u32);
+	__type(value, struct pending_open);
+} pending_unlink_paths SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 4096);
+	__type(key, __u32);
+	__type(value, struct pending_rename);
+} pending_rename_paths SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct pending_open);
+} pending_unlink_cpu SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct pending_rename);
+} pending_rename_cpu SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -233,7 +268,11 @@ struct {
 #define STAT_CONNECT_FMOD   4
 #define STAT_CONNECT_DENY   5
 #define STAT_CGROUP_CONNECT 6
-#define STAT_ENFORCE_MAX    7
+#define STAT_UNLINKAT_FMOD  7
+#define STAT_UNLINKAT_DENY  8
+#define STAT_RENAMEAT_FMOD  9
+#define STAT_RENAMEAT_DENY  10
+#define STAT_ENFORCE_MAX    11
 
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -701,7 +740,8 @@ int BPF_PROG(enforce_file_open, struct file *file)
 	return enforce_open_verdict(deny_rule, allow_rule, VERDICT_OPEN, write_intent, NULL, 0);
 }
 
-// Unlink/rename path resolution deferred; open/connect enforcement covers v1 bundle.
+// Unlink/rename LSM hooks are stubs; fmod_ret/__x64_sys_unlinkat|renameat2 enforce via
+// staged paths from enroll tracepoints (primary when bpf is not in the LSM stack).
 SEC("lsm/path_unlink")
 int BPF_PROG(enforce_path_unlink, const struct path *dir, struct dentry *dentry)
 {
@@ -794,6 +834,62 @@ static __always_inline int enforce_connect_from_pending(__u32 pid)
 	return rc;
 }
 
+static __always_inline int enforce_unlink_from_pending(__u32 pid)
+{
+	struct pending_open *po;
+	char *path;
+	int rc, len;
+	__u32 k = 0;
+
+	po = bpf_map_lookup_elem(&pending_unlink_paths, &pid);
+	if (!po || !valid_path_len(po->len))
+		po = bpf_map_lookup_elem(&pending_unlink_cpu, &k);
+	path = scratch_path_buf();
+	if (!po || !path || !valid_path_len(po->len))
+		return 0;
+
+	len = copy_path_bounded(path, po->path, po->len);
+	if (len < 0)
+		return 0;
+
+	rc = enforce_path(path, len, VERDICT_UNLINK, 0);
+	if (rc)
+		stat_inc(STAT_UNLINKAT_DENY);
+	return rc;
+}
+
+static __always_inline int enforce_rename_from_pending(__u32 pid)
+{
+	struct pending_rename *pr;
+	char *path;
+	int rc, len;
+	__u32 k = 0;
+
+	pr = bpf_map_lookup_elem(&pending_rename_paths, &pid);
+	if (!pr || !valid_path_len(pr->old_len) || !valid_path_len(pr->new_len))
+		pr = bpf_map_lookup_elem(&pending_rename_cpu, &k);
+	path = scratch_path_buf();
+	if (!pr || !path || !valid_path_len(pr->old_len) || !valid_path_len(pr->new_len))
+		return 0;
+
+	len = copy_path_bounded(path, pr->old_path, pr->old_len);
+	if (len < 0)
+		return 0;
+	rc = enforce_path(path, len, VERDICT_RENAME, 0);
+	if (rc) {
+		stat_inc(STAT_RENAMEAT_DENY);
+		return rc;
+	}
+
+	len = copy_path_bounded(path, pr->new_path, pr->new_len);
+	if (len < 0)
+		return 0;
+	rc = enforce_path(path, len, VERDICT_RENAME, 0);
+	if (rc)
+		stat_inc(STAT_RENAMEAT_DENY);
+	return rc;
+}
+
 SEC("fmod_ret/__x64_sys_openat")
 int BPF_PROG(enforce_openat_entry)
 {
@@ -822,5 +918,35 @@ int BPF_PROG(enforce_connect_entry)
 		return -EPERM;
 	}
 	return enforce_connect_from_pending(pid);
+}
+
+SEC("fmod_ret/__x64_sys_unlinkat")
+int BPF_PROG(enforce_unlinkat_entry)
+{
+	__u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+	stat_inc(STAT_UNLINKAT_FMOD);
+	if (!enforce_gate())
+		return 0;
+	if (!enforcement_live()) {
+		stat_inc(STAT_UNLINKAT_DENY);
+		return -EPERM;
+	}
+	return enforce_unlink_from_pending(pid);
+}
+
+SEC("fmod_ret/__x64_sys_renameat2")
+int BPF_PROG(enforce_renameat2_entry)
+{
+	__u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+	stat_inc(STAT_RENAMEAT_FMOD);
+	if (!enforce_gate())
+		return 0;
+	if (!enforcement_live()) {
+		stat_inc(STAT_RENAMEAT_DENY);
+		return -EPERM;
+	}
+	return enforce_rename_from_pending(pid);
 }
 #endif

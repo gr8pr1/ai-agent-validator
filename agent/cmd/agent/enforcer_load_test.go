@@ -28,8 +28,8 @@ func TestEnforcerBPFSkeleton(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attach syscall fmod_ret: %v", err)
 	}
-	if runtime.GOARCH == "amd64" && len(syscallAttached) < 2 {
-		t.Fatalf("expected fmod_ret openat+connect on amd64, got %d: %v", len(syscallAttached), syscallAttached)
+	if runtime.GOARCH == "amd64" && len(syscallAttached) < 4 {
+		t.Fatalf("expected fmod_ret openat+connect+unlinkat+renameat2 on amd64, got %d: %v", len(syscallAttached), syscallAttached)
 	}
 
 	attached, err := loader.AttachLSM(true)
@@ -51,7 +51,7 @@ func TestEnforcerBPFSkeleton(t *testing.T) {
 		t.Fatalf("open deny ringbuf: %v", err)
 	}
 
-	for _, name := range []string{"policy_ctrl", "tagged_pids", "pending_open_paths", "pending_connects", "path_deny", "path_allow", "inode_deny", "inode_allow", "ip_deny", "ip_allow", "port_deny", "port_allow", "deny_verdicts"} {
+	for _, name := range []string{"policy_ctrl", "tagged_pids", "pending_open_paths", "pending_connects", "pending_unlink_paths", "pending_unlink_cpu", "pending_rename_paths", "pending_rename_cpu", "path_deny", "path_allow", "inode_deny", "inode_allow", "ip_deny", "ip_allow", "port_deny", "port_allow", "deny_verdicts"} {
 		if loader.Maps()[name] == nil {
 			t.Fatalf("map %q not found", name)
 		}

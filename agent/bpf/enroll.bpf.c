@@ -123,6 +123,13 @@ struct pending_connect {
 	__u8 ip[16];
 };
 
+struct pending_rename {
+	__u16 old_len;
+	__u16 new_len;
+	char old_path[MAX_PATH];
+	char new_path[MAX_PATH];
+};
+
 // Staged openat path keyed by pid; sys_enter_openat runs before LSM file_open.
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -153,6 +160,35 @@ struct {
 	__type(key, __u32);
 	__type(value, struct pending_connect);
 } pending_connect_cpu SEC(".maps");
+
+// Staged unlinkat/renameat2 paths for fmod_ret enforcement (same pid key as open/connect).
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 4096);
+	__type(key, __u32);
+	__type(value, struct pending_open);
+} pending_unlink_paths SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 4096);
+	__type(key, __u32);
+	__type(value, struct pending_rename);
+} pending_rename_paths SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct pending_open);
+} pending_unlink_cpu SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, struct pending_rename);
+} pending_rename_cpu SEC(".maps");
 
 static __always_inline void inc_drop(void)
 {
@@ -463,6 +499,21 @@ int handle_unlinkat(struct trace_event_raw_sys_enter *ctx)
 		return 0;
 	e->argv_len = (plen >= MAX_PATH) ? MAX_PATH : (__u16)plen;
 
+	{
+		struct pending_open po = {};
+		int path_len = path_len_from_user_str(plen);
+
+		if (path_len > 0) {
+			po.len = (__u16)path_len;
+			if (bpf_probe_read_kernel(po.path, MAX_PATH - 1, path_buf) == 0) {
+				__u32 zero = 0;
+
+				bpf_map_update_elem(&pending_unlink_paths, &pid, &po, BPF_ANY);
+				bpf_map_update_elem(&pending_unlink_cpu, &zero, &po, BPF_ANY);
+			}
+		}
+	}
+
 	emit_action(b);
 	return 0;
 }
@@ -495,6 +546,24 @@ int handle_renameat2(struct trace_event_raw_sys_enter *ctx)
 	if (newlen <= 0)
 		return 0;
 	e->env_len = (newlen >= MAX_PATH) ? MAX_PATH : (__u16)newlen;
+
+	{
+		int old_len = path_len_from_user_str(oldlen);
+		int new_len = path_len_from_user_str(newlen);
+		struct pending_rename *pr;
+
+		if (old_len > 0 && new_len > 0) {
+			pr = bpf_map_lookup_elem(&pending_rename_cpu, &zero);
+			if (pr) {
+				__builtin_memset(pr, 0, sizeof(*pr));
+				pr->old_len = (__u16)old_len;
+				pr->new_len = (__u16)new_len;
+				if (bpf_probe_read_kernel(pr->old_path, MAX_PATH - 1, path_buf) == 0 &&
+				    bpf_probe_read_kernel(pr->new_path, MAX_PATH - 1, path2_buf) == 0)
+					bpf_map_update_elem(&pending_rename_paths, &pid, pr, BPF_ANY);
+			}
+		}
+	}
 
 	emit_action(b);
 	return 0;
