@@ -507,6 +507,24 @@ int handle_openat(struct trace_event_raw_sys_enter *ctx)
 	return 0;
 }
 
+#define AT_EMPTY_PATH 0x1000
+
+static __always_inline void stage_pending_unlink(__u32 pid, __u32 flags,
+						 char *path_buf, int path_len)
+{
+	struct pending_open po = {};
+	__u32 zero = 0;
+
+	po.open_flags = flags;
+	if (path_len > 0) {
+		po.len = (__u16)path_len;
+		if (bpf_probe_read_kernel(po.path, MAX_PATH - 1, path_buf) != 0)
+			return;
+	}
+	bpf_map_update_elem(&pending_unlink_paths, &pid, &po, BPF_ANY);
+	bpf_map_update_elem(&pending_unlink_cpu, &zero, &po, BPF_ANY);
+}
+
 SEC("tracepoint/syscalls/sys_enter_unlinkat")
 int handle_unlinkat(struct trace_event_raw_sys_enter *ctx)
 {
@@ -517,6 +535,37 @@ int handle_unlinkat(struct trace_event_raw_sys_enter *ctx)
 		return 0;
 
 	const char *path = (const char *)ctx->args[1];
+	__u32 flags = (__u32)ctx->args[2];
+
+	__u32 zero = 0;
+	struct enroll_buf *b = bpf_map_lookup_elem(&scratch, &zero);
+	if (!b)
+		return 0;
+
+	struct enroll_event *e = init_action_header(b, EVENT_UNLINK);
+	char *path_buf = b->data + EVENT_HEADER_SIZE + ACTION_DETAIL_SIZE;
+
+	long plen = bpf_probe_read_user_str(path_buf, MAX_PATH, path);
+	if (plen > 0) {
+		e->argv_len = (plen >= MAX_PATH) ? MAX_PATH : (__u16)plen;
+		stage_pending_unlink(pid, flags, path_buf, path_len_from_user_str(plen));
+		emit_action(b);
+	} else if (flags & AT_EMPTY_PATH) {
+		stage_pending_unlink(pid, flags, path_buf, 0);
+	}
+	return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_unlink")
+int handle_unlink(struct trace_event_raw_sys_enter *ctx)
+{
+	__u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+	ensure_tagged_from_ancestor(pid);
+	if (!is_tagged_pid(pid))
+		return 0;
+
+	const char *path = (const char *)ctx->args[0];
 
 	__u32 zero = 0;
 	struct enroll_buf *b = bpf_map_lookup_elem(&scratch, &zero);
@@ -530,22 +579,7 @@ int handle_unlinkat(struct trace_event_raw_sys_enter *ctx)
 	if (plen <= 0)
 		return 0;
 	e->argv_len = (plen >= MAX_PATH) ? MAX_PATH : (__u16)plen;
-
-	{
-		struct pending_open po = {};
-		int path_len = path_len_from_user_str(plen);
-
-		if (path_len > 0) {
-			po.len = (__u16)path_len;
-			if (bpf_probe_read_kernel(po.path, MAX_PATH - 1, path_buf) == 0) {
-				__u32 zero = 0;
-
-				bpf_map_update_elem(&pending_unlink_paths, &pid, &po, BPF_ANY);
-				bpf_map_update_elem(&pending_unlink_cpu, &zero, &po, BPF_ANY);
-			}
-		}
-	}
-
+	stage_pending_unlink(pid, 0, path_buf, path_len_from_user_str(plen));
 	emit_action(b);
 	return 0;
 }

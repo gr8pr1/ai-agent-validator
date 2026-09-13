@@ -118,7 +118,7 @@ re-checks every event against the process table before reporting.
 | `shadow` | not loaded | yes (`shadow_deny`) | no |
 | `enforce` | yes (`state: enforced` rules) | yes | yes (`-EPERM`, `kernel_deny`) |
 
-**Enforce hooks:** tagged agents — syscall fmod_ret (`openat`, `connect` on amd64).
+**Enforce hooks:** tagged agents — syscall fmod_ret (`openat`, `connect`, `unlinkat`, `unlink`, `renameat2` on amd64).
 Mode A cgroup (`mode_a.cgroup_contains`) — cgroup/connect4+6 for all processes in
 the slice (egress). LSM `socket_connect` attaches only when `bpf` is in the kernel
 LSM stack (`lsm=...,bpf` at boot); otherwise fmod_ret is the connect path for

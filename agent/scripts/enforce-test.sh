@@ -131,4 +131,15 @@ else
   rm -f "$TEST_FILE"
 fi
 
+echo "== /etc python os.remove (expect block) =="
+run_in_slice "touch '$TEST_FILE'"
+if run_in_slice "python3 -c \"import os; os.remove('$TEST_FILE')\"" 2>/dev/null; then
+  echo "FAIL /etc python unlink allowed" >&2
+  rm -f "$TEST_FILE"
+  exit 1
+else
+  echo "OK /etc python unlink blocked"
+  rm -f "$TEST_FILE"
+fi
+
 echo "== all enforce checks passed =="

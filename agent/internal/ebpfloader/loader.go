@@ -27,6 +27,7 @@ var tracepoints = []tracepoint{
 	{"syscalls", "sys_enter_connect", "handle_connect"},
 	{"syscalls", "sys_enter_openat", "handle_openat"},
 	{"syscalls", "sys_enter_unlinkat", "handle_unlinkat"},
+	{"syscalls", "sys_enter_unlink", "handle_unlink"},
 	{"syscalls", "sys_enter_renameat2", "handle_renameat2"},
 }
 

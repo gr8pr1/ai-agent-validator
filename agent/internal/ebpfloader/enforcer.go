@@ -46,6 +46,7 @@ var syscallPrograms = []string{
 	"enforce_openat_entry",
 	"enforce_connect_entry",
 	"enforce_unlinkat_entry",
+	"enforce_unlink_entry",
 	"enforce_renameat2_entry",
 }
 

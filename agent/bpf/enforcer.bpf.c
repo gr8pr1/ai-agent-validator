@@ -22,6 +22,8 @@ char LICENSE[] SEC("license") = "GPL";
 
 #define O_ACCMODE 00000003
 
+#define AT_EMPTY_PATH 0x1000
+
 #define VERDICT_OPEN 1
 #define VERDICT_UNLINK 2
 #define VERDICT_RENAME 3
@@ -772,7 +774,7 @@ int BPF_PROG(enforce_file_open, struct file *file)
 	return enforce_open_verdict(deny_rule, allow_rule, VERDICT_OPEN, write_intent, NULL, 0);
 }
 
-// Unlink/rename LSM hooks are stubs; fmod_ret/__x64_sys_unlinkat|renameat2 enforce via
+// Unlink/rename LSM hooks are stubs; fmod_ret/__x64_sys_unlink|unlinkat|renameat2 enforce via
 // staged paths from enroll tracepoints (primary when bpf is not in the LSM stack).
 SEC("lsm/path_unlink")
 int BPF_PROG(enforce_path_unlink, const struct path *dir, struct dentry *dentry)
@@ -874,15 +876,20 @@ static __always_inline int enforce_unlink_from_pending(__u32 pid)
 	__u32 k = 0;
 
 	po = bpf_map_lookup_elem(&pending_unlink_paths, &pid);
-	if (!po || !valid_path_len(po->len))
+	if (!po || (!valid_path_len(po->len) && !(po->open_flags & AT_EMPTY_PATH)))
 		po = bpf_map_lookup_elem(&pending_unlink_cpu, &k);
 	path = scratch_path_buf();
-	if (!po || !path || !valid_path_len(po->len))
-		return 0;
+	if (!po || !path)
+		return -EPERM;
+	/* Fail closed: tagged-agent unlink without a resolvable path (fd/AT_EMPTY_PATH). */
+	if (!valid_path_len(po->len) || (po->open_flags & AT_EMPTY_PATH)) {
+		stat_inc(STAT_UNLINKAT_DENY);
+		return -EPERM;
+	}
 
 	len = copy_path_bounded(path, po->path, po->len);
 	if (len < 0)
-		return 0;
+		return -EPERM;
 
 	rc = enforce_path(path, len, VERDICT_UNLINK, 0);
 	if (rc)
@@ -901,12 +908,14 @@ static __always_inline int enforce_rename_from_pending(__u32 pid)
 	if (!pr || !valid_path_len(pr->old_len) || !valid_path_len(pr->new_len))
 		pr = bpf_map_lookup_elem(&pending_rename_cpu, &k);
 	path = scratch_path_buf();
-	if (!pr || !path || !valid_path_len(pr->old_len) || !valid_path_len(pr->new_len))
-		return 0;
+	if (!pr || !path)
+		return -EPERM;
+	if (!valid_path_len(pr->old_len) || !valid_path_len(pr->new_len))
+		return -EPERM;
 
 	len = copy_path_bounded(path, pr->old_path, pr->old_len);
 	if (len < 0)
-		return 0;
+		return -EPERM;
 	rc = enforce_path(path, len, VERDICT_RENAME, 0);
 	if (rc) {
 		stat_inc(STAT_RENAMEAT_DENY);
@@ -915,7 +924,7 @@ static __always_inline int enforce_rename_from_pending(__u32 pid)
 
 	len = copy_path_bounded(path, pr->new_path, pr->new_len);
 	if (len < 0)
-		return 0;
+		return -EPERM;
 	rc = enforce_path(path, len, VERDICT_RENAME, 0);
 	if (rc)
 		stat_inc(STAT_RENAMEAT_DENY);
@@ -954,6 +963,21 @@ int BPF_PROG(enforce_connect_entry)
 
 SEC("fmod_ret/__x64_sys_unlinkat")
 int BPF_PROG(enforce_unlinkat_entry)
+{
+	__u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+	stat_inc(STAT_UNLINKAT_FMOD);
+	if (!enforce_gate())
+		return 0;
+	if (!enforcement_live()) {
+		stat_inc(STAT_UNLINKAT_DENY);
+		return -EPERM;
+	}
+	return enforce_unlink_from_pending(pid);
+}
+
+SEC("fmod_ret/__x64_sys_unlink")
+int BPF_PROG(enforce_unlink_entry)
 {
 	__u32 pid = bpf_get_current_pid_tgid() >> 32;
 
