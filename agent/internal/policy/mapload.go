@@ -3,11 +3,15 @@ package policy
 import (
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"syscall"
 
 	"github.com/cilium/ebpf"
 )
+
+// pathExpandHomeRoot is the /home directory scanned for "/home/*/.ssh/*" at load time.
+var pathExpandHomeRoot = "/home"
 
 // BPF map decision values (must match enforcer.bpf.c).
 const (
@@ -83,7 +87,8 @@ type portRule struct {
 
 // LoadLive clears policy maps and loads enforced (live) rules for kernel evaluation.
 // Shadow rules are ignored. Rules with uid/binary/cgroup predicates are skipped and
-// recorded in skipped count; complex path globs return an error.
+// recorded in skipped count. Unsupported path globs return an error except
+// "/home/*/.ssh/*", which expands to per-user "/home/USER/.ssh/*" prefixes.
 func LoadLive(cp *CompiledPolicy, maps EnforcerMapSet, ctrl PolicyCtrlValues) (LoadStats, error) {
 	var stats LoadStats
 	if cp == nil {
@@ -169,30 +174,36 @@ func loadPathRule(r CompiledRule, maps EnforcerMapSet, verdict, dec uint8, hash 
 		Specificity: uint32(r.Specificity),
 	}
 	for _, pattern := range r.PathIn {
-		key, err := pathPatternToLPM(pattern)
+		expanded, err := expandPathPattern(pattern)
 		if err != nil {
-			return out, err
+			return out, fmt.Errorf("expand path %q: %w", pattern, err)
 		}
-		if err := target.Put(key, val); err != nil {
-			return out, fmt.Errorf("put path %q: %w", pattern, err)
-		}
-		if dec == MapDecisionAllow {
-			out.pathAllow++
-		} else {
-			out.pathDeny++
-		}
-		if isExactPathPattern(pattern) {
-			ikey, err := pathToInodeKey(pattern)
+		for _, p := range expanded {
+			key, err := pathPatternToLPM(p)
 			if err != nil {
-				return out, fmt.Errorf("resolve inode for %q: %w", pattern, err)
+				return out, err
 			}
-			if err := inodeTarget.Put(ikey, val); err != nil {
-				return out, fmt.Errorf("put inode %q: %w", pattern, err)
+			if err := target.Put(key, val); err != nil {
+				return out, fmt.Errorf("put path %q: %w", p, err)
 			}
 			if dec == MapDecisionAllow {
-				out.inodeAllow++
+				out.pathAllow++
 			} else {
-				out.inodeDeny++
+				out.pathDeny++
+			}
+			if isExactPathPattern(p) {
+				ikey, err := pathToInodeKey(p)
+				if err != nil {
+					return out, fmt.Errorf("resolve inode for %q: %w", p, err)
+				}
+				if err := inodeTarget.Put(ikey, val); err != nil {
+					return out, fmt.Errorf("put inode %q: %w", p, err)
+				}
+				if dec == MapDecisionAllow {
+					out.inodeAllow++
+				} else {
+					out.inodeDeny++
+				}
 			}
 		}
 	}
@@ -387,6 +398,27 @@ func clearMap(m *ebpf.Map) error {
 		}
 	}
 	return nil
+}
+
+func expandPathPattern(pattern string) ([]string, error) {
+	if pattern != homeSSHGlobPattern {
+		return []string{pattern}, nil
+	}
+	entries, err := os.ReadDir(pathExpandHomeRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	root := strings.TrimSuffix(pathExpandHomeRoot, "/")
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			out = append(out, root+"/"+e.Name()+"/.ssh/*")
+		}
+	}
+	return out, nil
 }
 
 func isExactPathPattern(pattern string) bool {

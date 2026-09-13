@@ -282,9 +282,14 @@ func ruleMatchesPath(r *CompiledRule, path string) bool {
 	return false
 }
 
+const homeSSHGlobPattern = "/home/*/.ssh/*"
+
 func pathMatchesGlob(path, pattern string) bool {
 	if pattern == path {
 		return true
+	}
+	if pattern == homeSSHGlobPattern {
+		return pathMatchesHomeSSH(path)
 	}
 	if strings.HasSuffix(pattern, "/*") {
 		prefix := strings.TrimSuffix(pattern, "/*")
@@ -297,4 +302,16 @@ func pathMatchesGlob(path, pattern string) bool {
 		}
 	}
 	return false
+}
+
+func pathMatchesHomeSSH(path string) bool {
+	rest, ok := strings.CutPrefix(path, "/home/")
+	if !ok {
+		return false
+	}
+	user, suffix, ok := strings.Cut(rest, "/.ssh/")
+	if !ok || user == "" || strings.Contains(user, "/") {
+		return false
+	}
+	return suffix == "" || suffix[0] != '/'
 }

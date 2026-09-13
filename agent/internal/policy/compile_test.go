@@ -112,4 +112,10 @@ func TestPathMatchesGlob(t *testing.T) {
 	if pathMatchesGlob("/var/log/syslog", "/etc/*") {
 		t.Fatal("should not match")
 	}
+	if !pathMatchesGlob("/home/alice/.ssh/id_rsa", "/home/*/.ssh/*") {
+		t.Fatal("home ssh glob")
+	}
+	if pathMatchesGlob("/home/alice/docs/x", "/home/*/.ssh/*") {
+		t.Fatal("non-ssh path should not match")
+	}
 }

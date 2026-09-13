@@ -63,4 +63,7 @@ Always **bump `version`**, re-sign, and `policyctl load`.
 - Only one shadow `connect` deny rule at the same specificity — do not add
   overlapping `dest_port_not_in` and `dest_ip_not_in` shadow denies without
   merging them into a single rule.
+- Kernel path rules support exact paths and trailing `/*` only. The pack uses
+  `/home/*/.ssh/*`; the agent expands that to `/home/USER/.ssh/*` for each home
+  directory at load time (restart or policy reload after new users are created).
 - Run `policyctl compile packs/your.yaml` before sign/load to catch conflicts.

@@ -220,6 +220,33 @@ func TestLoadLiveConnectAllowLists(t *testing.T) {
 	}
 }
 
+func TestExpandPathPatternHomeSSH(t *testing.T) {
+	home := t.TempDir()
+	orig := pathExpandHomeRoot
+	pathExpandHomeRoot = home
+	t.Cleanup(func() { pathExpandHomeRoot = orig })
+
+	if err := os.MkdirAll(filepath.Join(home, "alice", ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "bob"), []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := expandPathPattern("/home/*/.ssh/*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, "alice", ".ssh") + "/*"
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("got %v want [%s]", got, want)
+	}
+	passthrough, err := expandPathPattern("/etc/shadow")
+	if err != nil || len(passthrough) != 1 || passthrough[0] != "/etc/shadow" {
+		t.Fatalf("passthrough=%v err=%v", passthrough, err)
+	}
+}
+
 func TestLoadLiveExampleBundle(t *testing.T) {
 	maps := testEnforcerMaps(t)
 	path := filepath.Join("..", "..", "policy.yaml.example")
@@ -232,11 +259,11 @@ func TestLoadLiveExampleBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 	stats, err := LoadLive(cp, maps, PolicyCtrlValues{})
-	if err == nil {
-		t.Fatal("expected error for /home/*/.ssh/* glob in example bundle")
+	if err != nil {
+		t.Fatalf("load example bundle: %v", err)
 	}
 	if stats.PathDeny == 0 && stats.IPAllow == 0 {
-		t.Fatalf("expected partial stats before error, got %+v err=%v", stats, err)
+		t.Fatalf("expected map entries, got %+v", stats)
 	}
 }
 
