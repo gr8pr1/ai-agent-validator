@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
+	"strconv"
 	"time"
 
 	cringbuf "github.com/cilium/ebpf/ringbuf"
@@ -18,16 +20,17 @@ import (
 
 // Consumer turns kernel deny_verdict ringbuf records into audit events.
 type Consumer struct {
-	rep *report.Reporter
-	tbl *proctable.Table
-	pol *policy.Holder
-	hub *feedback.Hub
-	log *slog.Logger
+	rep      *report.Reporter
+	tbl      *proctable.Table
+	pol      *policy.Holder
+	hub      *feedback.Hub
+	connects *ConnectCache
+	log      *slog.Logger
 }
 
 // NewConsumer builds a deny ringbuf consumer.
-func NewConsumer(rep *report.Reporter, tbl *proctable.Table, pol *policy.Holder, hub *feedback.Hub, log *slog.Logger) *Consumer {
-	return &Consumer{rep: rep, tbl: tbl, pol: pol, hub: hub, log: log}
+func NewConsumer(rep *report.Reporter, tbl *proctable.Table, pol *policy.Holder, hub *feedback.Hub, connects *ConnectCache, log *slog.Logger) *Consumer {
+	return &Consumer{rep: rep, tbl: tbl, pol: pol, hub: hub, connects: connects, log: log}
 }
 
 // Run reads deny verdicts until ctx is cancelled or the reader closes.
@@ -52,12 +55,20 @@ func (c *Consumer) Run(ctx context.Context, reader *cringbuf.Reader) {
 
 func (c *Consumer) emit(v Verdict) {
 	action := ActionName(v.Action)
+	target := resolveTarget(v, c.connects)
 	rec := report.Record{
 		Time:   time.Unix(0, int64(v.TimestampNS)),
 		Event:  "kernel_deny",
 		Action: action,
 		PID:    v.PID,
 		Path:   v.Path,
+	}
+	if v.Action == ActionConnect {
+		rec.Dest = v.DestIP
+		rec.DestPort = v.DestPort
+		if rec.Dest == "" && target != "" {
+			rec.Dest, rec.DestPort = splitConnectTarget(target)
+		}
 	}
 	if c.pol != nil {
 		if cp, meta := c.pol.Get(); cp != nil {
@@ -81,7 +92,7 @@ func (c *Consumer) emit(v Verdict) {
 		c.rep.Emit(rec)
 	}
 	if c.hub != nil {
-		fd := feedback.NewDecision(time.Now(), v.PID, action, v.Path, rec.AgentID, rec.RuleID, rec.Reason, rec.PolicyVersion)
+		fd := feedback.NewDecision(time.Now(), v.PID, action, target, rec.AgentID, rec.RuleID, rec.Reason, rec.PolicyVersion)
 		c.hub.Record(fd)
 		if c.rep != nil {
 			c.rep.Emit(report.Record{
@@ -95,7 +106,33 @@ func (c *Consumer) emit(v Verdict) {
 			})
 		}
 	}
-	c.log.Debug("kernel_deny", "pid", v.PID, "rule", rec.RuleID, "action", action, "path", v.Path)
+	c.log.Debug("kernel_deny", "pid", v.PID, "rule", rec.RuleID, "action", action, "target", target)
+}
+
+func resolveTarget(v Verdict, cache *ConnectCache) string {
+	if t := v.Target(); t != "" {
+		return t
+	}
+	if v.Action != ActionConnect || cache == nil {
+		return v.Path
+	}
+	ip, port, ok := cache.Lookup(v.PID)
+	if !ok {
+		return v.Path
+	}
+	return FormatConnectTarget(ip, port)
+}
+
+func splitConnectTarget(target string) (ip string, port uint16) {
+	host, portStr, err := net.SplitHostPort(target)
+	if err != nil {
+		return target, 0
+	}
+	p, err := strconv.Atoi(portStr)
+	if err != nil || p < 0 || p > 65535 {
+		return host, 0
+	}
+	return host, uint16(p)
 }
 
 func formatHash(hash uint32) string {

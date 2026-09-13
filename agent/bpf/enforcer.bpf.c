@@ -66,7 +66,9 @@ struct deny_verdict {
 	__u32 pid;
 	__u32 rule_id_hash;
 	__u8 action;
-	__u8 _pad[3];
+	__u8 dest_ip_len;
+	__u16 dest_port;
+	__u8 dest_ip[16];
 	char path[MAX_PATH];
 };
 
@@ -350,8 +352,9 @@ static __always_inline int action_matches(__u8 rule_action, __u8 verdict, int wr
 	return 0;
 }
 
-static __always_inline void emit_deny(__u8 action, __u32 rule_hash,
-				      const char *path, int path_len)
+static __always_inline void emit_deny_ex(__u8 action, __u32 rule_hash,
+					 const char *path, int path_len,
+					 __u8 *ip, int ip_len, __u16 port)
 {
 	struct deny_verdict *v = bpf_ringbuf_reserve(&deny_verdicts, sizeof(*v), 0);
 
@@ -361,10 +364,29 @@ static __always_inline void emit_deny(__u8 action, __u32 rule_hash,
 	v->pid = bpf_get_current_pid_tgid() >> 32;
 	v->rule_id_hash = rule_hash;
 	v->action = action;
+	v->dest_ip_len = 0;
+	v->dest_port = 0;
+	__builtin_memset(v->dest_ip, 0, sizeof(v->dest_ip));
+	if (action == VERDICT_CONNECT && ip && ip_len > 0 && ip_len <= 16) {
+		int i;
+
+		v->dest_ip_len = ip_len;
+		v->dest_port = port;
+		for (i = 0; i < 16; i++)
+			v->dest_ip[i] = 0;
+		for (i = 0; i < ip_len; i++)
+			v->dest_ip[i] = ip[i];
+	}
 	__builtin_memset(v->path, 0, sizeof(v->path));
 	if (path && path_len > 0 && path_len < MAX_PATH)
 		bpf_probe_read_kernel(v->path, MAX_PATH - 1, path);
 	bpf_ringbuf_submit(v, 0);
+}
+
+static __always_inline void emit_deny(__u8 action, __u32 rule_hash,
+				      const char *path, int path_len)
+{
+	emit_deny_ex(action, rule_hash, path, path_len, NULL, 0, 0);
 }
 
 static __always_inline int enforce_open_verdict(struct path_rule *deny_rule,
@@ -488,7 +510,7 @@ static __always_inline int enforce_connect_parsed(__u8 *ip, int ip_len, __u16 po
 		__u32 hash = dip->rule_id_hash;
 		if (ip_not_in_rule_matches(dip, aip, hash) &&
 		    port_not_in_rule_matches(dpt_catch, apt, hash)) {
-			emit_deny(VERDICT_CONNECT, hash, NULL, 0);
+			emit_deny_ex(VERDICT_CONNECT, hash, NULL, 0, ip, ip_len, port);
 			return -EPERM;
 		}
 	}
@@ -499,14 +521,14 @@ static __always_inline int enforce_connect_parsed(__u8 *ip, int ip_len, __u16 po
 		    connect_rule_matches(aip, apt))
 			return 0;
 		if (ip_not_in_rule_matches(dip, aip, dip->rule_id_hash)) {
-			emit_deny(VERDICT_CONNECT, dip->rule_id_hash, NULL, 0);
+			emit_deny_ex(VERDICT_CONNECT, dip->rule_id_hash, NULL, 0, ip, ip_len, port);
 			return -EPERM;
 		}
 	}
 
 	if (dpt_catch && !dpt_catch->requires_ip &&
 	    port_not_in_rule_matches(dpt_catch, apt, dpt_catch->rule_id_hash)) {
-		emit_deny(VERDICT_CONNECT, dpt_catch->rule_id_hash, NULL, 0);
+		emit_deny_ex(VERDICT_CONNECT, dpt_catch->rule_id_hash, NULL, 0, ip, ip_len, port);
 		return -EPERM;
 	}
 
@@ -514,7 +536,7 @@ static __always_inline int enforce_connect_parsed(__u8 *ip, int ip_len, __u16 po
 	if (dip && dip->requires_port && connect_rule_matches(dip, dpt)) {
 		if (aip && aip->specificity > dip->specificity)
 			return 0;
-		emit_deny(VERDICT_CONNECT, dip->rule_id_hash, NULL, 0);
+		emit_deny_ex(VERDICT_CONNECT, dip->rule_id_hash, NULL, 0, ip, ip_len, port);
 		return -EPERM;
 	}
 
@@ -522,7 +544,7 @@ static __always_inline int enforce_connect_parsed(__u8 *ip, int ip_len, __u16 po
 	    dpt->action == VERDICT_CONNECT) {
 		if (apt && apt->rule_id_hash == dpt->rule_id_hash)
 			return 0;
-		emit_deny(VERDICT_CONNECT, dpt->rule_id_hash, NULL, 0);
+		emit_deny_ex(VERDICT_CONNECT, dpt->rule_id_hash, NULL, 0, ip, ip_len, port);
 		return -EPERM;
 	}
 

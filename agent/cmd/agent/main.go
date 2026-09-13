@@ -278,7 +278,9 @@ func main() {
 	if enforcer != nil {
 		tagger = enroll.MultiTagger{loader, enforcer}
 	}
+	connectCache := deny.NewConnectCache()
 	eng := enroll.New(cfg, enricher.New(), fps, tbl, rep, tagger, polHolder, log)
+	eng.SetConnectCache(connectCache)
 
 	// Signals + lifecycle.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -307,7 +309,7 @@ func main() {
 	defer closeRingbufs()
 
 	if denyReader != nil {
-		go deny.NewConsumer(rep, tbl, polHolder, fbHub, log).Run(ctx, denyReader)
+		go deny.NewConsumer(rep, tbl, polHolder, fbHub, connectCache, log).Run(ctx, denyReader)
 	}
 
 	go func() {

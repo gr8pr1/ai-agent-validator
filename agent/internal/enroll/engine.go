@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/config"
+	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/deny"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/enricher"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/event"
 	"github.com/gr8pr1/ebpf-ai-blocker/agent/internal/fingerprint"
@@ -37,8 +38,9 @@ type Engine struct {
 	policy       *policy.Holder
 	policyScope  string // optional config override for agent_scope matching
 	log          *slog.Logger
-	stats        *Stats
-	debug        bool
+	stats         *Stats
+	connectCache  *deny.ConnectCache
+	debug         bool
 }
 
 // New constructs an Engine. fps may be nil when Mode B is disabled; tagger may
@@ -71,6 +73,9 @@ func (e *Engine) Fingerprints() *fingerprint.Set { return e.fps }
 // Stats exposes the counters (for the debug server).
 func (e *Engine) Stats() *Stats { return e.stats }
 
+// SetConnectCache wires connect dest recording for deny feedback enrichment.
+func (e *Engine) SetConnectCache(c *deny.ConnectCache) { e.connectCache = c }
+
 // Handle processes one decoded event.
 func (e *Engine) Handle(ev *event.Event) {
 	now := time.Now()
@@ -81,9 +86,26 @@ func (e *Engine) Handle(ev *event.Event) {
 		e.handleExec(ev, now)
 	case event.TypeExit:
 		e.handleExit(ev, now)
-	case event.TypeConnect, event.TypeOpen, event.TypeUnlink, event.TypeRename:
+	case event.TypeConnect:
+		e.recordConnectDest(ev)
+		e.handleAction(ev)
+	case event.TypeOpen, event.TypeUnlink, event.TypeRename:
 		e.handleAction(ev)
 	}
+}
+
+func (e *Engine) recordConnectDest(ev *event.Event) {
+	if e.connectCache == nil || ev.DestIP == "" {
+		return
+	}
+	p, ok := e.tbl.Get(ev.PID)
+	if !ok || !p.Tagged() {
+		return
+	}
+	if ev.StartTimeNs != 0 && p.StartNS != 0 && ev.StartTimeNs != p.StartNS {
+		return
+	}
+	e.connectCache.Record(ev.PID, ev.DestIP, ev.DestPort)
 }
 
 func (e *Engine) tagKernel(pid uint32) {
@@ -167,6 +189,9 @@ func (e *Engine) handleExit(ev *event.Event, now time.Time) {
 		e.stats.count("exit", p.AgentID)
 		e.rep.Emit(report.Record{Event: "exit", PID: p.PID, RootPID: p.RootPID, AgentID: p.AgentID, Comm: p.Comm})
 		e.untagKernel(ev.PID)
+	}
+	if e.connectCache != nil {
+		e.connectCache.Forget(ev.PID)
 	}
 	e.tbl.OnExit(ev.PID, now)
 }

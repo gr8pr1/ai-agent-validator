@@ -41,7 +41,7 @@ func TestConsumerEmitKernelDeny(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := NewConsumer(rep, tbl, holder, hub, slog.Default())
+	c := NewConsumer(rep, tbl, holder, hub, nil, slog.Default())
 	hash := policy.RuleIDHash("deny-etc-shadow")
 	c.emit(Verdict{
 		TimestampNS: 100,
@@ -111,6 +111,64 @@ func bytesSplit(b []byte) [][]byte {
 	return lines
 }
 
+func TestConsumerEmitConnectTarget(t *testing.T) {
+	dir := t.TempDir()
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	rep, err := report.New("text", auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { rep.Close() })
+
+	tbl := proctable.New()
+	tbl.OnExec(55, 1, 1, "curl", "/usr/bin/curl", time.Now())
+	tbl.Tag(55, "agent", proctable.ModeA, "curl")
+
+	hub, err := feedback.NewHub("", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := NewConsumer(rep, tbl, policy.NewHolder(), hub, nil, slog.Default())
+	c.emit(Verdict{
+		TimestampNS: 1,
+		PID:         55,
+		RuleIDHash:  0x1,
+		Action:      ActionConnect,
+		DestIP:      "203.0.113.9",
+		DestPort:    443,
+	})
+
+	got := hub.ForAgent("agent")
+	if len(got) != 1 || got[0].Target != "203.0.113.9:443" {
+		t.Fatalf("feedback target=%+v", got)
+	}
+}
+
+func TestConsumerEmitConnectCacheFallback(t *testing.T) {
+	cache := NewConnectCache()
+	cache.Record(66, "198.51.100.2", 80)
+	hub, err := feedback.NewHub("", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, err := report.New("json", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { rep.Close() })
+
+	tbl := proctable.New()
+	tbl.OnExec(66, 1, 1, "curl", "/usr/bin/curl", time.Now())
+	tbl.Tag(66, "agent", proctable.ModeA, "curl")
+	c := NewConsumer(rep, tbl, policy.NewHolder(), hub, cache, slog.Default())
+	c.emit(Verdict{PID: 66, Action: ActionConnect, RuleIDHash: 1})
+
+	got := hub.ForAgent("agent")
+	if len(got) != 1 || got[0].Target != "198.51.100.2:80" {
+		t.Fatalf("target=%+v", got)
+	}
+}
+
 func TestConsumerEmitUnknownHash(t *testing.T) {
 	dir := t.TempDir()
 	auditPath := filepath.Join(dir, "audit.jsonl")
@@ -120,7 +178,7 @@ func TestConsumerEmitUnknownHash(t *testing.T) {
 	}
 	t.Cleanup(func() { rep.Close() })
 
-	c := NewConsumer(rep, proctable.New(), policy.NewHolder(), nil, slog.Default())
+	c := NewConsumer(rep, proctable.New(), policy.NewHolder(), nil, nil, slog.Default())
 	c.emit(Verdict{
 		TimestampNS: 1,
 		PID:         99,
