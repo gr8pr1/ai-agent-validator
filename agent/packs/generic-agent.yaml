@@ -1,0 +1,73 @@
+# Curated deny-list pack for generic AI coding agents (P5).
+# Shadow-first egress; enforced credential, enforcer, and system-path protection.
+#
+# Install:  ./scripts/pack-install.sh packs/generic-agent.yaml
+# Promote:  policyctl promote --state enforced --bump packs/generic-agent.yaml shadow-public-egress
+# Report:   policyctl shadow-report --audit report-audit.jsonl --since 24h
+
+policy_bundle:
+  version: 1
+  agent_scope: "agent"
+  signed_by: "curated-pack/generic-agent"
+  default_action: allow
+  fail_direction: open
+  rules:
+    - id: allow-localhost
+      rationale: "Loopback services (local dev servers, package mirrors) are allowed."
+      match:
+        action: connect
+        dest_ip_in: ["127.0.0.0/8"]
+      decision: allow
+      state: enforced
+
+    - id: shadow-public-egress
+      rationale: >
+        Log outbound connections to public IPs before enforcing. Promote to
+        enforced after a clean shadow window (policyctl shadow-report).
+      match:
+        action: connect
+        dest_ip_not_in:
+          - "10.0.0.0/8"
+          - "127.0.0.0/8"
+          - "192.168.0.0/16"
+          - "172.16.0.0/12"
+      decision: deny
+      state: shadow
+
+    - id: deny-cred-file-read
+      rationale: "Agents must not read credential files or SSH private keys."
+      match:
+        action: open
+        path_in:
+          - "/etc/shadow"
+          - "/etc/gshadow"
+          - "/root/.ssh/*"
+          - "/home/*/.ssh/*"
+      decision: deny
+      state: enforced
+
+    - id: deny-disable-enforcer
+      rationale: "Agents must not tamper with the validator agent or pinned BPF maps."
+      match:
+        action: open|write|unlink
+        path_in:
+          - "/etc/ai-agent-validator/*"
+          - "/sys/fs/bpf/ai-agent-validator/*"
+      decision: deny
+      state: enforced
+
+    - id: deny-destroy-system-paths
+      rationale: >
+        Block writes and deletes under OS-critical trees. Agent workspaces
+        outside these paths are intentionally not covered.
+      match:
+        action: write|unlink|rename
+        path_in:
+          - "/etc/*"
+          - "/boot/*"
+          - "/usr/*"
+          - "/bin/*"
+          - "/sbin/*"
+          - "/lib/*"
+      decision: deny
+      state: enforced

@@ -1,4 +1,4 @@
-.PHONY: all bpf build build-policyctl build-shim test vet clean run policy-test
+.PHONY: all bpf build build-policyctl build-shim test vet clean run policy-test pack-test
 
 CLANG       ?= $(shell which clang 2>/dev/null || echo /usr/bin/clang)
 UNAME_M     := $(shell uname -m)
@@ -40,6 +40,9 @@ vet:
 
 policy-test: build-policyctl
 	./scripts/policy-test.sh
+
+pack-test: build-policyctl
+	./scripts/pack-test.sh
 
 # Needs root/CAP_BPF for eBPF load + attach.
 run: all

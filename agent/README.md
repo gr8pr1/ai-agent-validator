@@ -166,6 +166,8 @@ Environment variables (override with flags):
 | `./scripts/policy-test.sh` | no | P1: sign, load, rollback |
 | `./scripts/integration-test.sh` | yes | P0/P0.5: enroll + action capture |
 | `./scripts/enforce-test.sh` | yes | P3: localhost allow + egress/file deny |
+| `./scripts/pack-test.sh` | no | P5: compile curated policy packs |
+| `./scripts/pack-install.sh` | no | P5: sign + load a pack (needs policy.key) |
 | `go test ./internal/enroll/...` | no | P2 shadow evaluation (engine_shadow_test.go) |
 | `go test ./internal/policy/...` | no | P2 evaluator + shadow-report |
 
@@ -179,7 +181,8 @@ sudo ./scripts/integration-test.sh
 | Package / file | Responsibility |
 |----------------|----------------|
 | `bpf/enroll.bpf.c` | lifecycle tracepoints + action syscalls; advisory tag map |
-| `cmd/policyctl` | P1 trusted policy loader CLI; P2 `shadow-report` |
+| `cmd/policyctl` | P1 trusted policy loader CLI; P2 `shadow-report`; P5 `promote` |
+| `packs/` | P5 curated policy packs + carve-out examples |
 | `internal/policy` | schema, compiler, signing, store, loader, evaluator, holder, shadow-report |
 | `internal/ebpfloader` | load object, attach 7 tracepoints, ringbuf, tag map |
 | `internal/event` | decode ringbuf records (lifecycle + action layouts) |

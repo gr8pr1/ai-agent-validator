@@ -37,6 +37,8 @@ func main() {
 		err = cmdShow(os.Args[2:])
 	case "shadow-report":
 		err = cmdShadowReport(os.Args[2:])
+	case "promote":
+		err = cmdPromote(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 		return
@@ -64,10 +66,9 @@ Usage:
   policyctl rollback [--store ./policy-store] <version>
   policyctl show [--store ./policy-store] [version]
   policyctl shadow-report [--audit PATH] [--since DURATION]
+  policyctl promote [--state enforced|shadow] [--bump] <bundle.yaml> <rule-id>
 
 Flags must appear before positional arguments.
-
-// TODO (future, decision 8B): policyctl promote <rule-id> — flip rule state in bundle YAML.
 
 `)
 }
@@ -281,6 +282,28 @@ func cmdShow(args []string) error {
 	if err := enc.Encode(stored.Compiled); err != nil {
 		return err
 	}
+	return nil
+}
+
+func cmdPromote(args []string) error {
+	fs := flag.NewFlagSet("promote", flag.ExitOnError)
+	state := fs.String("state", policy.StateEnforced, "new rule state")
+	bump := fs.Bool("bump", false, "increment policy_bundle.version")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 2 {
+		return fmt.Errorf("usage: policyctl promote [--state enforced|shadow] [--bump] <bundle.yaml> <rule-id>")
+	}
+	path := fs.Arg(0)
+	ruleID := fs.Arg(1)
+	if err := policy.PromoteRule(path, ruleID, policy.PromoteRuleOptions{
+		NewState:    *state,
+		BumpVersion: *bump,
+	}); err != nil {
+		return err
+	}
+	fmt.Printf("promoted %q to %q in %s (re-sign before load)\n", ruleID, *state, path)
 	return nil
 }
 

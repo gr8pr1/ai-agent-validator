@@ -120,7 +120,9 @@ Rollback is instant: `policyctl rollback --store ./policy-store <version>`.
 `shadow-report` defaults to `audit.jsonl`. `--since` accepts Go duration strings
 (e.g. `24h`, `168h`); groups by `rule_id`, `shadow_source`, and `agent_id`.
 
-Future: `policyctl promote <rule-id>` to flip rule state in the bundle YAML.
+| `promote [--state STATE] [--bump] <bundle.yaml> <rule-id>` | Flip a rule's `state` in-place (P5); re-sign before load |
+
+Curated packs live in [packs/](packs/README.md). Install with `./scripts/pack-install.sh`.
 
 ## Smoke test
 

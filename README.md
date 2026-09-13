@@ -12,8 +12,8 @@ and version policy, and a **fast data plane** where the kernel enforces it
 deterministically with no model in the decision path. See
 [architecture.md](architecture.md) for the full design.
 
-> Status: **P0 + P0.5 + P1 + P2 implemented** (observe agent + policy loader + shadow mode).
-> P3 kernel enforcement is planned. See [architecture.md](architecture.md) §13.
+> Status: **P0–P4 + P3.7 + P5 packs implemented** (observe, policy loader, shadow, enforce,
+> denial feedback, pinned maps, curated packs). See [architecture.md](architecture.md) §13.
 
 ## What works today
 
@@ -48,7 +48,23 @@ events to the audit log. Nothing is blocked. Use `policyctl shadow-report` to
 summarize hits before promoting rules. See [agent/config.md](agent/config.md) and
 [agent/policy.md](agent/policy.md).
 
-Not yet: kernel enforcement (P3), denial feedback (P4).
+### P3 — enforce
+
+Kernel deny via fmod_ret + Mode A cgroup egress. See [agent/README.md](agent/README.md).
+
+### P4 — denial feedback
+
+Structured `policy_feedback` on kernel denies; optional `aiblocker-shim` for runtimes.
+
+### P5 — curated packs
+
+Ready-made bundles in [agent/packs/](agent/packs/README.md):
+
+```bash
+cd agent
+policyctl keygen
+./scripts/pack-install.sh packs/generic-agent.yaml
+```
 
 ## Quickstart
 
