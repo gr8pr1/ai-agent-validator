@@ -46,7 +46,7 @@ struct lpm_key {
 
 struct path_rule {
 	__u8 decision;
-	__u8 action;
+	__u8 action_mask; /* bitmask of VERDICT_* (1 << (verdict - 1)) */
 	__u8 requires_port;
 	__u8 _pad;
 	__u32 rule_id_hash;
@@ -407,11 +407,18 @@ static __always_inline struct path_rule *path_lpm_lookup(void *map, const char *
 	return bpf_map_lookup_elem(map, key);
 }
 
-static __always_inline int action_matches(__u8 rule_action, __u8 verdict, int write_intent)
+static __always_inline __u8 verdict_bit(__u8 verdict)
 {
-	if (rule_action == verdict)
+	if (verdict == 0 || verdict > VERDICT_WRITE)
+		return 0;
+	return 1 << (verdict - 1);
+}
+
+static __always_inline int action_matches(__u8 rule_mask, __u8 verdict, int write_intent)
+{
+	if (rule_mask & verdict_bit(verdict))
 		return 1;
-	if (verdict == VERDICT_OPEN && rule_action == VERDICT_WRITE && write_intent)
+	if (verdict == VERDICT_OPEN && write_intent && (rule_mask & verdict_bit(VERDICT_WRITE)))
 		return 1;
 	return 0;
 }
@@ -463,14 +470,14 @@ static __always_inline int enforce_open_verdict(struct path_rule *deny_rule,
 	__u32 deny_hash = 0;
 
 	if (deny_rule && deny_rule->decision == MAP_DECISION_DENY &&
-	    action_matches(deny_rule->action, verdict, write_intent)) {
+	    action_matches(deny_rule->action_mask, verdict, write_intent)) {
 		deny_match = 1;
 		deny_spec = deny_rule->specificity;
 		deny_hash = deny_rule->rule_id_hash;
 	}
 
 	if (allow_rule && allow_rule->decision == MAP_DECISION_ALLOW &&
-	    action_matches(allow_rule->action, verdict, write_intent) &&
+	    action_matches(allow_rule->action_mask, verdict, write_intent) &&
 	    allow_rule->specificity > deny_spec)
 		return 0;
 
@@ -525,7 +532,7 @@ static __always_inline struct path_rule *ip_lpm_lookup(void *map, __u8 *ip, int 
 
 static __always_inline int connect_rule_matches(struct path_rule *ip_rule, struct port_rule *port_rule)
 {
-	if (!ip_rule || ip_rule->action != VERDICT_CONNECT)
+	if (!ip_rule || !(ip_rule->action_mask & verdict_bit(VERDICT_CONNECT)))
 		return 0;
 	if (!ip_rule->requires_port)
 		return 1;
@@ -581,7 +588,7 @@ static __always_inline int enforce_connect_parsed(__u8 *ip, int ip_len, __u16 po
 
 	if (dip && !dip->requires_port) {
 		if (aip && aip->decision == MAP_DECISION_ALLOW &&
-		    aip->action == VERDICT_CONNECT &&
+		    (aip->action_mask & verdict_bit(VERDICT_CONNECT)) &&
 		    connect_rule_matches(aip, apt))
 			return 0;
 		if (ip_not_in_rule_matches(dip, aip, dip->rule_id_hash)) {

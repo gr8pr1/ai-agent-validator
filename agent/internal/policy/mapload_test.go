@@ -100,7 +100,7 @@ func TestLoadLivePathDeny(t *testing.T) {
 	if err := maps.PathDeny.Lookup(mustLPM(path), &v); err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
-	if v.Decision != MapDecisionDeny || v.Action != VerdictOpen {
+	if v.Decision != MapDecisionDeny || v.ActionMask != verdictBit(VerdictOpen) {
 		t.Fatalf("val=%+v", v)
 	}
 	ikey, err := pathToInodeKey(path)
@@ -110,7 +110,7 @@ func TestLoadLivePathDeny(t *testing.T) {
 	if err := maps.InodeDeny.Lookup(ikey, &v); err != nil {
 		t.Fatalf("inode lookup: %v", err)
 	}
-	if v.Decision != MapDecisionDeny || v.Action != VerdictOpen {
+	if v.Decision != MapDecisionDeny || v.ActionMask != verdictBit(VerdictOpen) {
 		t.Fatalf("inode val=%+v", v)
 	}
 }
@@ -283,6 +283,41 @@ func TestLoadLiveSkipsUIDRules(t *testing.T) {
 	}
 	if stats.Skipped != 1 || stats.PathDeny != 0 {
 		t.Fatalf("stats=%+v", stats)
+	}
+}
+
+func TestLoadPathRuleMergesActionMask(t *testing.T) {
+	maps := testEnforcerMaps(t)
+	cp := &CompiledPolicy{
+		Version:       1,
+		DefaultAction: DefaultActionAllow,
+		FailDirection: FailDirectionOpen,
+		Live: []CompiledRule{
+			{
+				ID: "deny-etc-write", Rationale: "no etc write", Decision: DecisionDeny,
+				Action: "write", PathIn: []string{"/etc/*"}, Specificity: 8,
+			},
+			{
+				ID: "deny-etc-unlink", Rationale: "no etc unlink", Decision: DecisionDeny,
+				Action: "unlink", PathIn: []string{"/etc/*"}, Specificity: 8,
+			},
+			{
+				ID: "deny-etc-rename", Rationale: "no etc rename", Decision: DecisionDeny,
+				Action: "rename", PathIn: []string{"/etc/*"}, Specificity: 8,
+			},
+		},
+	}
+	if _, err := LoadLive(cp, maps, PolicyCtrlValues{EnforcementActive: true}); err != nil {
+		t.Fatal(err)
+	}
+	var v pathRule
+	key := mustLPM("/etc/shadow")
+	if err := maps.PathDeny.Lookup(key, &v); err != nil {
+		t.Fatal(err)
+	}
+	want := verdictBit(VerdictWrite) | verdictBit(VerdictUnlink) | verdictBit(VerdictRename)
+	if v.ActionMask != want {
+		t.Fatalf("ActionMask=%#x want %#x", v.ActionMask, want)
 	}
 }
 

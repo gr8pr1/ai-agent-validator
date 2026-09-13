@@ -69,11 +69,56 @@ type lpmKey struct {
 // pathRule mirrors struct path_rule in enforcer.bpf.c.
 type pathRule struct {
 	Decision     uint8
-	Action       uint8
+	ActionMask   uint8
 	RequiresPort uint8
 	_            uint8
 	RuleIDHash   uint32
 	Specificity  uint32
+}
+
+func verdictBit(verdict uint8) uint8 {
+	if verdict == 0 {
+		return 0
+	}
+	return 1 << (verdict - 1)
+}
+
+func mergePathRules(existing, incoming pathRule) pathRule {
+	if incoming.Decision != existing.Decision {
+		if incoming.Decision == MapDecisionDeny {
+			return incoming
+		}
+		return existing
+	}
+	switch {
+	case incoming.Specificity > existing.Specificity:
+		return incoming
+	case incoming.Specificity < existing.Specificity:
+		return existing
+	default:
+		out := existing
+		out.ActionMask = existing.ActionMask | incoming.ActionMask
+		if incoming.RuleIDHash != 0 {
+			out.RuleIDHash = incoming.RuleIDHash
+		}
+		return out
+	}
+}
+
+func putMergedPathRule(m *ebpf.Map, key lpmKey, incoming pathRule) error {
+	var existing pathRule
+	if err := m.Lookup(key, &existing); err == nil {
+		incoming = mergePathRules(existing, incoming)
+	}
+	return m.Put(key, incoming)
+}
+
+func putMergedInodeRule(m *ebpf.Map, key inodeKey, incoming pathRule) error {
+	var existing pathRule
+	if err := m.Lookup(key, &existing); err == nil {
+		incoming = mergePathRules(existing, incoming)
+	}
+	return m.Put(key, incoming)
 }
 
 // portRule mirrors struct port_rule in enforcer.bpf.c.
@@ -169,7 +214,7 @@ func loadPathRule(r CompiledRule, maps EnforcerMapSet, verdict, dec uint8, hash 
 	}
 	val := pathRule{
 		Decision:    dec,
-		Action:      verdict,
+		ActionMask:  verdictBit(verdict),
 		RuleIDHash:  hash,
 		Specificity: uint32(r.Specificity),
 	}
@@ -183,7 +228,7 @@ func loadPathRule(r CompiledRule, maps EnforcerMapSet, verdict, dec uint8, hash 
 			if err != nil {
 				return out, err
 			}
-			if err := target.Put(key, val); err != nil {
+			if err := putMergedPathRule(target, key, val); err != nil {
 				return out, fmt.Errorf("put path %q: %w", p, err)
 			}
 			if dec == MapDecisionAllow {
@@ -196,7 +241,7 @@ func loadPathRule(r CompiledRule, maps EnforcerMapSet, verdict, dec uint8, hash 
 				if err != nil {
 					return out, fmt.Errorf("resolve inode for %q: %w", p, err)
 				}
-				if err := inodeTarget.Put(ikey, val); err != nil {
+				if err := putMergedInodeRule(inodeTarget, ikey, val); err != nil {
 					return out, fmt.Errorf("put inode %q: %w", p, err)
 				}
 				if dec == MapDecisionAllow {
@@ -222,7 +267,7 @@ func loadConnectRule(r CompiledRule, maps EnforcerMapSet, verdict, dec uint8, ha
 		requiresIP = 1
 	}
 	ipVal := pathRule{
-		Decision: dec, Action: verdict, RequiresPort: requiresPort,
+		Decision: dec, ActionMask: verdictBit(verdict), RequiresPort: requiresPort,
 		RuleIDHash: hash, Specificity: specificity,
 	}
 	ipMap := maps.IPDeny
@@ -257,7 +302,7 @@ func loadConnectRule(r CompiledRule, maps EnforcerMapSet, verdict, dec uint8, ha
 			return out, fmt.Errorf("dest_ip_not_in requires deny decision")
 		}
 		allowIPVal := pathRule{
-			Decision: MapDecisionAllow, Action: verdict, RequiresPort: requiresPort,
+			Decision: MapDecisionAllow, ActionMask: verdictBit(verdict), RequiresPort: requiresPort,
 			RuleIDHash: hash, Specificity: specificity,
 		}
 		for _, cidr := range r.DestIPNotIn {
@@ -271,7 +316,7 @@ func loadConnectRule(r CompiledRule, maps EnforcerMapSet, verdict, dec uint8, ha
 			out.ipAllow++
 		}
 		denyCatch := pathRule{
-			Decision: MapDecisionDeny, Action: verdict, RequiresPort: requiresPort,
+			Decision: MapDecisionDeny, ActionMask: verdictBit(verdict), RequiresPort: requiresPort,
 			RuleIDHash: hash, Specificity: specificity,
 		}
 		for _, cidr := range []string{"0.0.0.0/0", "::/0"} {
