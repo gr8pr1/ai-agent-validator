@@ -140,18 +140,29 @@ func main() {
 			log.Error("enroll pending_connect_cpu map missing; cannot wire kernel enforcement")
 			os.Exit(1)
 		}
-		enforcer, err = ebpfloader.LoadEnforcer(enforcerObject, map[string]*ebpf.Map{
-			"tagged_pids":         tagMap,
-			"pending_open_paths":  pendingOpenMap,
-			"pending_connects":    pendingConnectMap,
-			"pending_open_cpu":    pendingOpenCPUMap,
-			"pending_connect_cpu": pendingConnectCPUMap,
+		pinPath := cfg.BPF.PinPath
+		enforcer, err = ebpfloader.LoadEnforcer(enforcerObject, ebpfloader.EnforcerLoadOptions{
+			MapReplacements: map[string]*ebpf.Map{
+				"tagged_pids":         tagMap,
+				"pending_open_paths":  pendingOpenMap,
+				"pending_connects":    pendingConnectMap,
+				"pending_open_cpu":    pendingOpenCPUMap,
+				"pending_connect_cpu": pendingConnectCPUMap,
+			},
+			PinPath: pinPath,
 		})
 		if err != nil {
 			log.Error("loading enforcer BPF", "err", err)
 			os.Exit(1)
 		}
 		defer enforcer.Close()
+		if pinPath != "" {
+			if enforcer.ReusedPinnedMaps() {
+				log.Info("reusing pinned policy maps", "path", pinPath)
+			} else {
+				log.Info("pinned policy maps for restart persistence", "path", pinPath)
+			}
+		}
 		bpfInLSM := logKernelLSMStack(log)
 		ebpfloader.WarnExtraEnforcerProgs(log, "before_attach")
 		syscallAttached, err := enforcer.AttachSyscallEnforcement()

@@ -239,6 +239,26 @@ Shadow verdict (P2, when `policy.enabled`):
 
 ---
 
+## `bpf` — pinned policy maps (P3.7)
+
+When `policy.mode: enforce`, policy maps can persist under bpffs across agent
+restarts so live rules and `policy_ctrl` survive process exit.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `pin_path` | string | `/sys/fs/bpf/ai-agent-validator` | bpffs directory; `""` disables pinning |
+
+Pinned maps: `policy_ctrl`, `path_deny/allow`, `ip_deny/allow`, `port_deny/allow`,
+`inode_deny/allow`. Ringbufs and per-CPU scratch maps are not pinned.
+
+Inspect: `ls /sys/fs/bpf/ai-agent-validator/` or `bpftool map show pinned
+/sys/fs/bpf/ai-agent-validator/policy_ctrl`.
+
+On startup the agent logs `reusing pinned policy maps` when pins from a prior run
+are loaded. Stale or incompatible pins are cleared and recreated automatically.
+
+---
+
 ## `debug` — debug HTTP server
 
 Enabled automatically when you pass `--debug` (also forces log level to `debug`), or

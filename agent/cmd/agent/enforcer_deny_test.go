@@ -73,7 +73,9 @@ func TestEnforcerDenyOpenEPERM(t *testing.T) {
 		"pending_open_cpu":    enrollLoader.PendingOpenCPUMap(),
 		"pending_connect_cpu": enrollLoader.PendingConnectCPUMap(),
 	}
-	enforcer, err := ebpfloader.LoadEnforcer(enforcerObject, replacements)
+	enforcer, err := ebpfloader.LoadEnforcer(enforcerObject, ebpfloader.EnforcerLoadOptions{
+		MapReplacements: replacements,
+	})
 	if err != nil {
 		t.Fatalf("load enforcer BPF: %v", err)
 	}

@@ -74,14 +74,39 @@ type PolicyCtrl struct {
 
 // EnforcerLoader owns the P3 enforcement BPF collection and LSM links.
 type EnforcerLoader struct {
-	coll  *ebpf.Collection
-	links []link.Link
+	coll       *ebpf.Collection
+	links      []link.Link
+	pinPath    string
+	reusedPins bool
+}
+
+// PinPath returns the bpffs root used for policy map pinning, or "".
+func (l *EnforcerLoader) PinPath() string {
+	if l == nil {
+		return ""
+	}
+	return l.pinPath
+}
+
+// ReusedPinnedMaps reports whether policy maps were loaded from bpffs pins.
+func (l *EnforcerLoader) ReusedPinnedMaps() bool {
+	if l == nil {
+		return false
+	}
+	return l.reusedPins
+}
+
+// EnforcerLoadOptions configures enforcer collection load.
+type EnforcerLoadOptions struct {
+	MapReplacements map[string]*ebpf.Map
+	PinPath         string // bpffs root; empty disables map pinning
 }
 
 // LoadEnforcer parses and loads the enforcer BPF object into the kernel.
 // When replacements includes "tagged_pids", the enforcer shares the enroll
 // advisory tag map so LSM hooks observe the same tagged set as tracepoints.
-func LoadEnforcer(obj []byte, replacements map[string]*ebpf.Map) (*EnforcerLoader, error) {
+// PinPath persists policy maps under bpffs across agent restarts (P3.7).
+func LoadEnforcer(obj []byte, opts EnforcerLoadOptions) (*EnforcerLoader, error) {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("remove memlock: %w", err)
 	}
@@ -89,14 +114,54 @@ func LoadEnforcer(obj []byte, replacements map[string]*ebpf.Map) (*EnforcerLoade
 	if err != nil {
 		return nil, fmt.Errorf("load enforcer spec: %w", err)
 	}
-	opts := ebpf.CollectionOptions{
-		MapReplacements: replacements,
+
+	replacements := opts.MapReplacements
+	var pinnedClosers map[string]*ebpf.Map
+	reusedPins := false
+	if opts.PinPath != "" {
+		pinned, _ := LoadPinnedPolicyMaps(opts.PinPath)
+		if len(pinned) > 0 {
+			pinnedClosers = pinned
+			reusedPins = true
+			replacements = mergeReplacements(replacements, pinned)
+		}
 	}
-	coll, err := ebpf.NewCollectionWithOptions(spec, opts)
+
+	coll, err := newEnforcerCollection(spec, replacements)
+	if err != nil && reusedPins {
+		closePinnedMaps(pinnedClosers)
+		pinnedClosers = nil
+		reusedPins = false
+		ClearPinnedPolicyMaps(opts.PinPath)
+		coll, err = newEnforcerCollection(spec, opts.MapReplacements)
+	}
+	if err != nil {
+		closePinnedMaps(pinnedClosers)
+		return nil, err
+	}
+	closePinnedMaps(pinnedClosers)
+
+	if opts.PinPath != "" && !reusedPins {
+		if err := PinPolicyMaps(opts.PinPath, coll.Maps); err != nil {
+			coll.Close()
+			return nil, err
+		}
+	}
+	return &EnforcerLoader{
+		coll:       coll,
+		pinPath:    opts.PinPath,
+		reusedPins: reusedPins,
+	}, nil
+}
+
+func newEnforcerCollection(spec *ebpf.CollectionSpec, replacements map[string]*ebpf.Map) (*ebpf.Collection, error) {
+	coll, err := ebpf.NewCollectionWithOptions(spec, ebpf.CollectionOptions{
+		MapReplacements: replacements,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("new enforcer collection: %w", err)
 	}
-	return &EnforcerLoader{coll: coll}, nil
+	return coll, nil
 }
 
 // AttachSyscallEnforcement links fmod_ret syscall programs when present in the object.

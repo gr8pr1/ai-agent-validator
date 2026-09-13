@@ -36,6 +36,10 @@ debug:
   enabled: false
   http_addr: "127.0.0.1:9230"
 
+# P3.7: persist enforcer policy maps under bpffs across agent restarts.
+bpf:
+  pin_path: "/sys/fs/bpf/ai-agent-validator"  # set "" to disable
+
 # P4: structured denial feedback for agent runtimes (enabled with policy.mode: enforce).
 feedback:
   path: "/tmp/aiblocker-feedback.jsonl"  # JSONL sink for aiblocker-shim

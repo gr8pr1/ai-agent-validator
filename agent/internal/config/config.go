@@ -21,6 +21,12 @@ type Config struct {
 	Feedback  FeedbackConfig `yaml:"feedback"`
 	Report    ReportConfig   `yaml:"report"`
 	Debug     DebugConfig    `yaml:"debug"`
+	BPF       BPFConfig      `yaml:"bpf"`
+}
+
+// BPFConfig controls BPF map persistence (P3.7).
+type BPFConfig struct {
+	PinPath string `yaml:"pin_path"` // bpffs root; empty disables pinning
 }
 
 // ModeAConfig controls controlled-spawn cgroup enrollment.
@@ -145,6 +151,9 @@ func Default() Config {
 		Debug: DebugConfig{
 			Enabled:  false,
 			HTTPAddr: "127.0.0.1:9230",
+		},
+		BPF: BPFConfig{
+			PinPath: "/sys/fs/bpf/ai-agent-validator",
 		},
 	}
 }

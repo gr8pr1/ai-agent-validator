@@ -45,6 +45,10 @@ load`, then start the agent. Mode A processes in `mode_a.cgroup_contains` (e.g.
 `ai-agents.slice`) get egress enforcement via cgroup/connect; tagged agents also
 get open/connect enforcement via syscall fmod_ret hooks.
 
+Policy maps persist under `bpf.pin_path` (default `/sys/fs/bpf/ai-agent-validator`)
+across agent restarts (P3.7). Ensure the AI cgroup slice exists before starting
+the agent in Mode A (`systemd-run --slice=ai-agents.slice sleep infinity`).
+
 AI agent shell (Mode A):
 
 ```bash
