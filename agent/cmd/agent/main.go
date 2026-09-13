@@ -316,7 +316,11 @@ func main() {
 	connectCache := deny.NewConnectCache()
 	eng := enroll.New(cfg, enricher.New(), fps, tbl, rep, tagger, polHolder, log)
 	eng.SetConnectCache(connectCache)
-	eng.ResyncKernelTags()
+	if n, tagged := eng.BootstrapRunning(); n > 0 || tagged > 0 {
+		log.Info("bootstrapped running processes", "newly_enrolled", n, "kernel_tagged", tagged)
+	} else {
+		eng.ResyncKernelTags()
+	}
 
 	// Signals + lifecycle.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

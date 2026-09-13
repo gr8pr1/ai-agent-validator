@@ -120,11 +120,17 @@ func (e *Engine) untagKernel(pid uint32) {
 	}
 }
 
-// ResyncKernelTags rewrites every tracked tagged PID into the kernel tag map.
+// ResyncKernelTags rewrites every tracked tagged PID and its /proc descendants
+// into the kernel tag map.
 func (e *Engine) ResyncKernelTags() {
+	ppids := listProcesses()
 	for _, p := range e.tbl.TaggedSnapshot() {
 		e.tagKernel(p.PID)
+		if p.RootPID != 0 && p.RootPID != p.PID {
+			e.tagKernel(p.RootPID)
+		}
 	}
+	e.propagateKernelDescendants(ppids)
 }
 
 func (e *Engine) handleFork(ev *event.Event, now time.Time) {
@@ -132,6 +138,10 @@ func (e *Engine) handleFork(ev *event.Event, now time.Time) {
 	e.stats.count("fork", child.AgentID)
 	if child.Tagged() {
 		e.tagKernel(child.PID)
+		if child.RootPID != 0 {
+			e.tagKernel(child.RootPID)
+		}
+		e.tagKernel(ev.PPID)
 	}
 	if e.debug {
 		e.log.Debug("fork", "pid", ev.PID, "ppid", ev.PPID, "comm", ev.Comm, "tagged", child.Tagged())
